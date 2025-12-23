@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"fmt"
 	"log/slog"
 	"strings"
 )
@@ -11,28 +10,18 @@ func GetAllLevels() []string {
 	return []string{"debug", "info", "warn", "error"}
 }
 
-// ParseLevelChecked parses a string into a slog.Level and validates input.
-func ParseLevelChecked(s string) (slog.Level, error) {
+// ParseLevel parses a string into a slog.Level.
+func ParseLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
-		return slog.LevelDebug, nil
+		return slog.LevelDebug
 	case "info":
-		return slog.LevelInfo, nil
+		return slog.LevelInfo
 	case "warn", "warning":
-		return slog.LevelWarn, nil
+		return slog.LevelWarn
 	case "error":
-		return slog.LevelError, nil
+		return slog.LevelError
 	default:
-		return slog.LevelInfo, fmt.Errorf("invalid log level: %q", s)
-	}
-}
-
-// ParseLevel parses a string into a slog.Level.
-// Unknown values are coerced to info for backwards compatibility.
-func ParseLevel(s string) slog.Level {
-	level, err := ParseLevelChecked(s)
-	if err != nil {
 		return slog.LevelInfo
 	}
-	return level
 }

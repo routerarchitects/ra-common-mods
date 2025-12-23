@@ -5,8 +5,6 @@ import (
 	"log/slog"
 )
 
-// This is for future use when opentelemetry gets integrated.
-
 // ContextHandler adds correlation IDs from context to the record.
 type ContextHandler struct {
 	Next slog.Handler
