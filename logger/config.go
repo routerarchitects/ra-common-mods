@@ -15,8 +15,6 @@ type Config struct {
 
 	Levels LevelsConfig `envPrefix:"LOG_"`
 
-	Correlation CorrelationConfig `envPrefix:"LOG_CORR_"`
-
 	Redaction RedactionConfig `envPrefix:"LOG_REDACT_"`
 
 	Stacktrace StacktraceConfig `envPrefix:"LOG_STACK_"`
@@ -44,18 +42,6 @@ type LevelsConfig struct {
 	// SubsystemLevels is the parsed map (owned by module at runtime).
 	// Services may leave this empty and rely on SubsystemLevelsRaw.
 	SubsystemLevels map[string]slog.Level `env:"-"`
-}
-
-type CorrelationConfig struct {
-	Enabled bool `env:"ENABLED" envDefault:"true"`
-
-	// Header names to read/write correlation IDs.
-	RequestIDHeader string `env:"REQUEST_ID_HEADER" envDefault:"X-Request-Id"`
-	TraceIDHeader   string `env:"TRACE_ID_HEADER" envDefault:"X-Trace-Id"`
-	SpanIDHeader    string `env:"SPAN_ID_HEADER" envDefault:"X-Span-Id"`
-
-	GenerateRequestID bool `env:"GENERATE_REQUEST_ID" envDefault:"true"`
-	Propagate         bool `env:"PROPAGATE" envDefault:"true"`
 }
 
 type RedactionConfig struct {
