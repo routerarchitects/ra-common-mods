@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/routerarchitects/ra-common-mods/kafka"
+	"github.com/routerarchitects/ra-common-mods/logger"
 )
 
 // Event represents a sample message structure
@@ -24,11 +26,21 @@ type Event struct {
 	Worker    int       `json:"worker"`
 }
 
+type Config struct {
+	Log logger.Config
+}
+
 func main() {
 	// Setup logger
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	var appCfg Config
+	if err := env.Parse(&appCfg); err != nil {
+		panic(err)
+	}
+	aLog, shutdown, err := logger.Init(appCfg.Log)
+	if err != nil {
+		panic(err)
+	}
+	defer shutdown()
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -40,29 +52,29 @@ func main() {
 
 	// Configuration
 	cfg := kafka.DefaultConfig()
-	cfg.Brokers = []string{"localhost:9092"}
+	cfg.Brokers = []string{"82416f07ada9:9092"}
 	cfg.ClientID = "kafka-example"
 	cfg.Consumer.GroupID = "example-consumer-group"
 
 	topic := "example-topic"
 
 	// Start producer in background
-	go runProducer(ctx, cfg, topic, logger)
+	go runProducer(ctx, cfg, topic, aLog)
 
 	// Wait a bit for producer to start
 	time.Sleep(2 * time.Second)
 
 	// Start consumer
-	go runConsumer(ctx, cfg, topic, logger)
+	go runConsumer(ctx, cfg, topic, aLog)
 
 	// Wait for termination signal
 	<-sigterm
-	logger.Info("Shutting down gracefully...")
+	aLog.Info("Shutting down gracefully...")
 	cancel()
 
 	// Give some time for cleanup
 	time.Sleep(2 * time.Second)
-	logger.Info("Shutdown complete")
+	aLog.Info("Shutdown complete")
 }
 
 // runProducer creates a producer and spawns 10 goroutines to publish messages
