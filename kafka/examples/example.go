@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/caarlos0/env/v11"
 	"github.com/routerarchitects/ra-common-mods/kafka"
 	"github.com/routerarchitects/ra-common-mods/logger"
 )
@@ -27,20 +26,28 @@ type Event struct {
 }
 
 type Config struct {
-	Log logger.Config
+	Log   logger.Config `json:"log"`
+	Kafka kafka.Config  `json:"kafka"`
 }
 
 func main() {
-	// Setup logger
-	var appCfg Config
-	if err := env.Parse(&appCfg); err != nil {
+	data, err := os.ReadFile("config.json")
+	if err != nil {
 		panic(err)
 	}
+	// Setup logger
+	var appCfg Config
+	if err := json.Unmarshal(data, &appCfg); err != nil {
+		panic(err)
+	}
+
 	aLog, shutdown, err := logger.Init(appCfg.Log)
 	if err != nil {
 		panic(err)
 	}
 	defer shutdown()
+
+	aLog.Info("Logger Initiated")
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -51,7 +58,7 @@ func main() {
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
 
 	// Configuration
-	cfg := kafka.DefaultConfig()
+	cfg := appCfg.Kafka
 	cfg.Brokers = []string{"82416f07ada9:9092"}
 	cfg.ClientID = "kafka-example"
 	cfg.Consumer.GroupID = "example-consumer-group"
