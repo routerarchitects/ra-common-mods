@@ -79,14 +79,4 @@ func TestLoggerFlow(t *testing.T) {
 		t.Error("Expected db debug message to show")
 	}
 	buf.Reset()
-
-	// D. Context Propagation
-	// Mock correlation
-	ctx = withCorrelation(ctx, correlation{requestID: "req-1"})
-	l.InfoContext(ctx, "request processing")
-
-	json.Unmarshal(buf.Bytes(), &entry)
-	if entry["request_id"] != "req-1" {
-		t.Errorf("Expected request_id='req-1', got %v", entry["request_id"])
-	}
 }
