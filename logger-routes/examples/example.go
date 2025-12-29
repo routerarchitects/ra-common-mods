@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"time"
+
 	"github.com/caarlos0/env/v11"
 	"github.com/gofiber/fiber/v3"
 	"github.com/routerarchitects/ra-common-mods/logger"
@@ -22,9 +25,22 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer shutdown()
+	defer shutdown() // No arguments
 
-	root.Info("Logger initialized")
+	root.InfoContext(context.Background(), "starting service", "password", "1234512q2323213")
+
+	subSysLog := logger.Subsystem("test")
+	subSysLog.InfoContext(context.Background(), "subsys log")
+
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			subSysLog.InfoContext(context.Background(), "subsys log")
+			root.InfoContext(context.Background(), "root log")
+			root.ErrorContext(context.Background(), "root error")
+			subSysLog.ErrorContext(context.Background(), "subsys error")
+		}
+	}()
 
 	app := fiber.New()
 	logger_routes.RegisterFiberRoutes(app.Group("/logger"))
