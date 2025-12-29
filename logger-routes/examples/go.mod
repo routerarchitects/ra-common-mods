@@ -2,11 +2,15 @@ module github.com/routerarchitects/ra-common-mods/logger-routes/examples
 
 go 1.25.1
 
+replace github.com/routerarchitects/ra-common-mods/logger => ../../logger
+
+replace github.com/routerarchitects/ra-common-mods/logger-routes => ../
+
 require (
 	github.com/caarlos0/env/v11 v11.3.1
 	github.com/gofiber/fiber/v3 v3.0.0-rc.3
 	github.com/routerarchitects/ra-common-mods/logger v0.0.0-20251224120222-b438314c6ae1
-	github.com/routerarchitects/ra-common-mods/logger-routes v0.0.0-20251224120724-6ed50c4ca284
+	github.com/routerarchitects/ra-common-mods/logger-routes v0.0.0-00010101000000-000000000000
 )
 
 require (

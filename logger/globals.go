@@ -14,6 +14,12 @@ var (
 // Subsystem returns a logger with the subsystem attribute pre-bound.
 // This is a helper for services.
 func Subsystem(name string) *slog.Logger {
+	mu.RLock()
+	if _, ok := globalConfig.Levels.SubsystemLevels[name]; !ok {
+		globalConfig.Levels.SubsystemLevels[name] = ParseLevel(globalConfig.Levels.DefaultLevel)
+	}
+	mu.RUnlock()
+
 	// We assume L() is already the Handler Chain.
 	return L().With("subsystem", name)
 }
