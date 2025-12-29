@@ -32,11 +32,9 @@ func TestLoggerFlow(t *testing.T) {
 
 	// Subsystem Handler
 	subH := &SubsystemHandler{
-		Next:         jsonH,
-		DefaultLevel: slog.LevelInfo,
-		SubsystemLevels: map[string]slog.Level{
-			"db": slog.LevelDebug,
-		},
+		Next:          jsonH,
+		subSystemName: "test",
+		defaultLevel:  slog.LevelInfo,
 	}
 
 	// Context Handler

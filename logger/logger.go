@@ -58,9 +58,9 @@ func Init(cfg Config) (*slog.Logger, func(), error) {
 
 	// Context Handler
 	wrapped := &SubsystemHandler{
-		Next:            h,
-		DefaultLevel:    defaultLvl,
-		SubsystemLevels: subLevels,
+		Next:          h,
+		defaultLevel:  defaultLvl,
+		subSystemName: "main",
 	}
 
 	l := slog.New(wrapped)
