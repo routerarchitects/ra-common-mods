@@ -2,8 +2,6 @@ package kafka
 
 import (
 	"time"
-
-	"github.com/caarlos0/env/v11"
 )
 
 // Config is the top-level configuration for Kafka clients.
@@ -138,22 +136,4 @@ func DefaultConfig() Config {
 			RetryBackoff:    100 * time.Millisecond,
 		},
 	}
-}
-
-// LoadFromEnv loads the configuration from environment variables.
-// It starts with DefaultConfig and overrides with values from the environment.
-// Returns an error if required environment variables are missing or if parsing fails.
-//
-// Example usage:
-//
-//	cfg, err := kafka.LoadFromEnv()
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-func LoadFromEnv() (Config, error) {
-	cfg := DefaultConfig()
-	if err := env.Parse(&cfg); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
 }

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/caarlos0/env/v11"
 	"github.com/routerarchitects/ra-common-mods/kafka"
 	"github.com/routerarchitects/ra-common-mods/logger"
 )
@@ -31,13 +32,16 @@ type Config struct {
 }
 
 func main() {
-	data, err := os.ReadFile("config.json")
-	if err != nil {
-		panic(err)
-	}
+	// data, err := os.ReadFile("config.json")
+	// if err != nil {
+	// 	panic(err)
+	// }
 	// Setup logger
 	var appCfg Config
-	if err := json.Unmarshal(data, &appCfg); err != nil {
+	// if err := json.Unmarshal(data, &appCfg); err != nil {
+	// 	panic(err)
+	// }
+	if err := env.Parse(&appCfg); err != nil {
 		panic(err)
 	}
 
@@ -59,7 +63,7 @@ func main() {
 
 	// Configuration
 	cfg := appCfg.Kafka
-	cfg.Brokers = []string{"82416f07ada9:9092"}
+	cfg.Brokers = []string{"924a0bd396af:9092"}
 	cfg.ClientID = "kafka-example"
 	cfg.Consumer.GroupID = "example-consumer-group"
 
