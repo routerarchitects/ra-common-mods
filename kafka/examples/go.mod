@@ -4,14 +4,16 @@ go 1.25.0
 
 replace github.com/routerarchitects/ra-common-mods/kafka => ../
 
+replace github.com/routerarchitects/ra-common-mods/logger => ../../logger
+
 require (
+	github.com/caarlos0/env/v11 v11.3.1
 	github.com/routerarchitects/ra-common-mods/kafka v0.0.0-00010101000000-000000000000
 	github.com/routerarchitects/ra-common-mods/logger v0.0.0-20251224121724-a9a35ca79abd
 )
 
 require (
 	github.com/IBM/sarama v1.43.3 // indirect
-	github.com/caarlos0/env/v11 v11.3.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
 	github.com/eapache/go-xerial-snappy v0.0.0-20230731223053-c322873962e3 // indirect
