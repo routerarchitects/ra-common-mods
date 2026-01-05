@@ -13,10 +13,8 @@ func RegisterFiberRoutes(r fiber.Router) {
 }
 
 func getSubsystemLevelsHandler(c fiber.Ctx) error {
-	levels, err := logger.GetSubsystemLevels()
-	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-	}
+	levels := logger.GetSubsystemLevels()
+
 	return c.JSON(levels)
 }
 
@@ -29,7 +27,7 @@ func updateSubsystemLevelsHandler(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 
-	levels, _ := logger.GetSubsystemLevels()
+	levels := logger.GetSubsystemLevels()
 	return c.JSON(levels)
 }
 
