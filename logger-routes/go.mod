@@ -4,10 +4,7 @@ go 1.25.1
 
 replace github.com/routerarchitects/ra-common-mods/logger => ../logger
 
-require (
-	github.com/gofiber/fiber/v3 v3.0.0-rc.3
-	github.com/routerarchitects/ra-common-mods/logger v0.0.0-20251224120222-b438314c6ae1
-)
+require github.com/gofiber/fiber/v3 v3.0.0-rc.3
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
@@ -18,6 +15,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
+	github.com/routerarchitects/ra-common-mods/logger v0.0.0-00010101000000-000000000000 // indirect
 	github.com/tinylib/msgp v1.5.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.68.0 // indirect

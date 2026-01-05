@@ -29,19 +29,21 @@ func Init(cfg Config) (*slog.Logger, func(), error) {
 	maps.Copy(cfg.Levels.SubsystemLevels, subLevels)
 
 	// 2. Redaction
+	var redactFunc func([]string, slog.Attr) slog.Attr
 	redactKeys := make(map[string]struct{})
 	if cfg.Redaction.Enabled {
 		keys := strings.SplitSeq(cfg.Redaction.KeysCSV, ",")
 		for k := range keys {
 			redactKeys[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
 		}
+		redactFunc = redactionFunction(redactKeys, cfg.Redaction.Replacement)
 	}
 
 	// 3. Backend (JSON vs Text)
 	opts := &slog.HandlerOptions{
 		Level:       slog.LevelDebug,
 		AddSource:   cfg.Output.AddSource,
-		ReplaceAttr: redactionFunction(redactKeys, cfg.Redaction.Replacement),
+		ReplaceAttr: redactFunc,
 	}
 
 	var backend slog.Handler
@@ -51,12 +53,12 @@ func Init(cfg Config) (*slog.Logger, func(), error) {
 		backend = slog.NewJSONHandler(os.Stderr, opts)
 	}
 
-	// Subsystem Handler
+	// Context Handle
 	h := &ContextHandler{
 		Next: backend,
 	}
 
-	// Context Handler
+	// Subsystem Handler
 	wrapped := &SubsystemHandler{
 		Next:          h,
 		defaultLevel:  defaultLvl,
@@ -67,7 +69,7 @@ func Init(cfg Config) (*slog.Logger, func(), error) {
 	l = l.With("service", cfg.ServiceName, "version", cfg.ServiceVersion, "env", cfg.Environment)
 
 	slog.SetDefault(l)
-	globalConfig = cfg
+	globalConfig.Store(cfg)
 
 	return l, func() {}, nil
 }
@@ -80,4 +82,16 @@ func L() *slog.Logger {
 // With returns a context with fields bound.
 func With(ctx context.Context, args ...any) context.Context {
 	return withCtxFields(ctx, args)
+}
+
+// redactionFunction returns a ReplaceAttr function for slog.HandlerOptions
+func redactionFunction(keys map[string]struct{}, replacement string) func([]string, slog.Attr) slog.Attr {
+	return func(groups []string, a slog.Attr) slog.Attr {
+		// keys checks
+		// We only check the key name.
+		if _, ok := keys[strings.ToLower(a.Key)]; ok {
+			return slog.String(a.Key, replacement)
+		}
+		return a
+	}
 }

@@ -13,9 +13,9 @@ type SubsystemHandler struct {
 }
 
 func (h *SubsystemHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	mu.RLock()
-	subLogLevel, ok := globalConfig.Levels.SubsystemLevels[h.subSystemName]
-	mu.RUnlock()
+	// Atomic load - no lock needed
+	cfg := GetConfig()
+	subLogLevel, ok := cfg.Levels.SubsystemLevels[h.subSystemName]
 
 	if !ok {
 		return level >= h.defaultLevel
