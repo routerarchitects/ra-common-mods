@@ -23,5 +23,11 @@ func main() {
 	}
 	defer shutdown() // No arguments
 
+	subLogger := logger.Subsystem("http")
+	subLogger.InfoContext(context.Background(), "starting service", "password", "1234512q2323213")
+
+	subLogger1 := logger.Subsystem("db")
+	subLogger1.DebugContext(context.Background(), "starting serviceq", "password", "1234512q2323213")
+
 	root.InfoContext(context.Background(), "starting service", "password", "1234512q2323213")
 }

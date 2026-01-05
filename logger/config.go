@@ -25,7 +25,7 @@ type OutputConfig struct {
 	// If empty, defaults to:
 	// - dev: text
 	// - otherwise: json
-	Format string `env:"FORMAT" envDefault:"json"`
+	Format string `env:"FORMAT" envDefault:""`
 
 	// AddSource: include file:line
 	AddSource bool `env:"ADD_SOURCE" envDefault:"false"`

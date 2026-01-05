@@ -3,59 +3,91 @@ package logger
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
+	"sync/atomic"
 )
 
 var (
-	globalConfig Config
-	mu           sync.RWMutex
+	globalConfig atomic.Value
+	mu           sync.Mutex
 )
 
 // Subsystem returns a logger with the subsystem attribute pre-bound.
 // This is a helper for services.
 func Subsystem(name string) *slog.Logger {
-	mu.RLock()
-	if _, ok := globalConfig.Levels.SubsystemLevels[name]; !ok {
-		globalConfig.Levels.SubsystemLevels[name] = ParseLevel(globalConfig.Levels.DefaultLevel)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-read config under lock in case it changed
+	cfg := GetConfig()
+	if _, ok := cfg.Levels.SubsystemLevels[name]; ok {
+		return L().With("subsystem", name)
 	}
-	mu.RUnlock()
+
+	// Copy-On-Write:
+	newCfg := GetCopyConfig()
+
+	// Add new subsystem with default level
+	newCfg.Levels.SubsystemLevels[name] = ParseLevel(cfg.Levels.DefaultLevel)
+	globalConfig.Store(newCfg)
 
 	// We assume L() is already the Handler Chain.
 	return L().With("subsystem", name)
 }
 
+// GetCopyConfig returns a copy of the current config.
+func GetCopyConfig() Config {
+	val := globalConfig.Load()
+	if val == nil {
+		return Config{}
+	}
+	cfg := val.(Config)
+
+	// Copy-On-Write: Create new map
+	newLevels := make(map[string]slog.Level)
+	if cfg.Levels.SubsystemLevels != nil {
+		maps.Copy(newLevels, cfg.Levels.SubsystemLevels)
+	}
+	cfg.Levels.SubsystemLevels = newLevels
+	return cfg
+}
+
 // GetConfig returns the current config.
-func GetConfig() (Config, error) {
-	return globalConfig, nil
+func GetConfig() Config {
+	val := globalConfig.Load()
+	if val == nil {
+		return Config{}
+	}
+	return val.(Config)
 }
 
 // GetSubsystemLevels returns a copy of current levels.
-func GetSubsystemLevels() (map[string]string, error) {
+func GetSubsystemLevels() map[string]string {
 	levels := make(map[string]string)
-	mu.RLock()
-	defer mu.RUnlock()
-	for k, v := range globalConfig.Levels.SubsystemLevels {
+
+	cfg := GetConfig()
+
+	for k, v := range cfg.Levels.SubsystemLevels {
 		levels[k] = v.String()
 	}
-	return levels, nil
+	return levels
 }
 
 // UpdateSubsystemLevels updates just the levels.
 func UpdateSubsystemLevels(levels map[string]string) error {
 	mu.Lock()
 	defer mu.Unlock()
-	cfg := globalConfig
 
-	// We must initialize the map if nil, because config structs might have nil map initially
-	if cfg.Levels.SubsystemLevels == nil {
-		cfg.Levels.SubsystemLevels = make(map[string]slog.Level)
-	}
+	cfg := GetCopyConfig()
 
-	// Since we are applying on top of existing, we don't wipe previous
+	// Apply updates
 	for k, v := range levels {
 		cfg.Levels.SubsystemLevels[k] = ParseLevel(v)
 	}
-	globalConfig = cfg
+
+	// Update config
+	globalConfig.Store(cfg)
 	return nil
 }
 
