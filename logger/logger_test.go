@@ -10,6 +10,12 @@ import (
 
 func TestLoggerFlow(t *testing.T) {
 
+	// Ensure global config is initialized for test
+	globalConfig.Store(Config{
+		Levels: LevelsConfig{
+			SubsystemLevels: map[string]slog.Level{},
+		},
+	})
 	// 2. Redirect output to buffer
 	var buf bytes.Buffer
 
@@ -71,6 +77,9 @@ func TestLoggerFlow(t *testing.T) {
 	buf.Reset()
 
 	// C. Subsystem Log (DB=debug, should show)
+	// We must register the "db" subsystem with Debug level for it to show
+	UpdateSubsystemLevels(map[string]string{"db": "debug"})
+
 	dbLog := l.With("subsystem", "db")
 	dbLog.DebugContext(ctx, "db query")
 	if buf.Len() == 0 {
