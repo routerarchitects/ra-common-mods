@@ -279,6 +279,10 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 
 			// Mark offset
 			session.MarkMessage(msg, "")
+			// If auto-commit is disabled, commit immediately (Synchronous Commit)
+			if h.opts.AutoCommit <= 0 {
+				session.Commit()
+			}
 
 		case <-session.Context().Done():
 			return nil
