@@ -42,12 +42,6 @@ type Consumer interface {
 
 // SubscribeOptions contains options for subscribing to topics.
 type SubscribeOptions struct {
-	// Number of concurrent workers processing messages
-	Workers int
-
-	// Channel buffer size (default: 100)
-	BufferSize int
-
 	// AutoCommit interval (0 = manual via handler return only)
 	AutoCommit time.Duration
 
@@ -58,9 +52,28 @@ type SubscribeOptions struct {
 	Interceptors []Interceptor
 }
 
+// RetryStrategy defines how to handle messages that fail processing after max retries.
+type RetryStrategy string
+
+const (
+	// RetryStrategyInfinite retries indefinitely until success (blocks partition).
+	RetryStrategyInfinite RetryStrategy = "infinite"
+
+	// RetryStrategyDLQ sends failed messages to a Dead Letter Queue.
+	// If DLQ is not configured or fails, it falls back to logging (like Ignore).
+	RetryStrategyDLQ RetryStrategy = "dlq"
+
+	// RetryStrategyLogAndIgnore tries to process the message once. If it fails, it logs the error and skips the message without any retries.
+	// This strategy ignores MaxRetries.
+	RetryStrategyLogAndIgnore RetryStrategy = "ignore"
+)
+
 // RetryPolicy defines the retry behavior for failed messages.
 type RetryPolicy struct {
-	// MaxRetries is the maximum number of retries (default: 3)
+	// Strategy determines behavior after MaxRetries (default: RetryStrategyLogAndIgnore)
+	Strategy RetryStrategy
+
+	// MaxRetries is the maximum number of retries (default: 3). Ignored if Strategy is Infinite.
 	MaxRetries int
 
 	// InitialDelay is the initial delay before first retry (default: 100ms)
@@ -82,10 +95,9 @@ type RetryPolicy struct {
 // DefaultSubscribeOptions returns sensible defaults for subscription.
 func DefaultSubscribeOptions() *SubscribeOptions {
 	return &SubscribeOptions{
-		Workers:    1,
-		BufferSize: 100,
-		AutoCommit: 5 * time.Second,
+		AutoCommit: -1,
 		RetryPolicy: &RetryPolicy{
+			Strategy:     RetryStrategyLogAndIgnore,
 			MaxRetries:   3,
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     30 * time.Second,

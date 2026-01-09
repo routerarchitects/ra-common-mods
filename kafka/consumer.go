@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -63,6 +62,14 @@ func NewConsumer(cfg Config, logger *slog.Logger) (Consumer, error) {
 	// Set max processing time
 	if cfg.Consumer.MaxProcessingTime > 0 {
 		saramaConfig.Consumer.MaxProcessingTime = cfg.Consumer.MaxProcessingTime
+	}
+
+	// Set auto-commit
+	if cfg.Consumer.CommitInterval > 0 {
+		saramaConfig.Consumer.Offsets.AutoCommit.Enable = true
+		saramaConfig.Consumer.Offsets.AutoCommit.Interval = cfg.Consumer.CommitInterval
+	} else {
+		saramaConfig.Consumer.Offsets.AutoCommit.Enable = false
 	}
 
 	// Return errors
@@ -165,8 +172,17 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 		finalHandler = opts.Interceptors[i](finalHandler)
 	}
 
+	// Configure auto-commit override if needed
+	saramaConfig := *c.saramaConfig
+	if opts.AutoCommit > 0 {
+		saramaConfig.Consumer.Offsets.AutoCommit.Enable = true
+		saramaConfig.Consumer.Offsets.AutoCommit.Interval = opts.AutoCommit
+	} else if opts.AutoCommit == 0 {
+		saramaConfig.Consumer.Offsets.AutoCommit.Enable = false
+	}
+
 	// Create consumer group
-	client, err := sarama.NewConsumerGroup(c.brokers, c.groupID, c.saramaConfig)
+	client, err := sarama.NewConsumerGroup(c.brokers, c.groupID, &saramaConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create consumer group: %w", err)
 	}
@@ -177,7 +193,6 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 		handler:     finalHandler,
 		opts:        opts,
 		logger:      c.logger,
-		workerPool:  newWorkerPool(opts.Workers, opts.BufferSize),
 		retryPolicy: opts.RetryPolicy,
 	}
 
@@ -217,7 +232,6 @@ type consumerGroupHandler struct {
 	handler     Handler
 	opts        *SubscribeOptions
 	logger      *slog.Logger
-	workerPool  *workerPool
 	retryPolicy *RetryPolicy
 }
 
@@ -234,6 +248,7 @@ func (h *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error {
 }
 
 // ConsumeClaim processes messages from a partition
+// ConsumeClaim processes messages from a partition
 func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
@@ -245,22 +260,25 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 			// Convert sarama message to our Message type
 			kafkaMsg := h.convertMessage(msg, session.Context())
 
-			// Submit to worker pool
-			h.workerPool.Submit(session.Context(), kafkaMsg, func(ctx context.Context, m *Message) error {
-				// Process with retries
-				return h.processWithRetry(ctx, m, h.handler)
-			}, func(processedMsg *Message, err error) {
-				if err != nil {
-					h.logger.Error("message processing failed",
-						"topic", processedMsg.Topic,
-						"partition", processedMsg.Partition,
-						"offset", processedMsg.Offset,
-						"error", err,
-					)
-				}
-				// Mark offset regardless of success/failure (using original sarama message)
-				session.MarkMessage(msg, "")
-			})
+			// Process synchronously
+			err := h.processWithRetry(session.Context(), kafkaMsg, h.handler)
+			if err != nil {
+				h.logger.Error("message processing failed",
+					"topic", kafkaMsg.Topic,
+					"partition", kafkaMsg.Partition,
+					"offset", kafkaMsg.Offset,
+					"error", err,
+				)
+				// We still mark the message to advance offset if we want to skip bad messages?
+				// But if we want DLQ, processWithRetry should have handled it.
+				// If processWithRetry returns error, it means all retries exhausted AND DLQ failed (or not configured).
+				// We proceed to mark it to avoid indefinite blocking on a "poison pill" that cannot be DLQ'd.
+				// However, strictly speaking, this logic depends on desired "At Least Once" vs "Skip Bad".
+				// Given we are moving to next message, we mark it.
+			}
+
+			// Mark offset
+			session.MarkMessage(msg, "")
 
 		case <-session.Context().Done():
 			return nil
@@ -292,14 +310,29 @@ func (h *consumerGroupHandler) convertMessage(msg *sarama.ConsumerMessage, ctx c
 
 // processWithRetry processes a message with retry logic
 func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Message, handler Handler) error {
+	var err error
 	if h.retryPolicy == nil {
 		return handler(ctx, msg)
 	}
 
-	var lastErr error
 	delay := h.retryPolicy.InitialDelay
+	maxRetries := h.retryPolicy.MaxRetries
+	strategy := h.retryPolicy.Strategy
 
-	for attempt := 0; attempt <= h.retryPolicy.MaxRetries; attempt++ {
+	// Default to LogAndIgnore if not specified
+	if strategy == "" {
+		strategy = RetryStrategyLogAndIgnore
+	}
+
+	// For infinite strategy, we loop forever (or until context cancelled)
+	// For others, we loop until maxRetries
+	attempt := 0
+	for {
+		// correct logic: check attempt limit only if NOT infinite
+		if strategy != RetryStrategyInfinite && attempt > maxRetries {
+			break
+		}
+
 		if attempt > 0 {
 			// Wait before retry
 			select {
@@ -328,92 +361,59 @@ func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Messag
 			return nil
 		}
 
-		lastErr = err
+		if strategy == RetryStrategyLogAndIgnore {
+			// We break from here as we are not retrying
+			break
+		}
+
+		attempt++
 	}
 
-	// All retries exhausted, send to DLQ if configured
-	if h.retryPolicy.DLQTopic != "" && h.retryPolicy.DLQProducer != nil {
-		h.logger.Error("sending message to DLQ after retry exhaustion",
+	// If we are here, we exhausted retries (for non-infinite strategies)
+	// Use explicit strategy handling
+	switch strategy {
+	case RetryStrategyDLQ:
+		if h.retryPolicy.DLQTopic != "" && h.retryPolicy.DLQProducer != nil {
+			h.logger.Error("sending message to DLQ after retry exhaustion",
+				"topic", msg.Topic,
+				"partition", msg.Partition,
+				"offset", msg.Offset,
+				"error", "retries exhausted", // We don't have the last specific error easily here without tracking, but context is clear
+			)
+
+			dlqErr := h.retryPolicy.DLQProducer.PublishWithHeaders(
+				ctx,
+				h.retryPolicy.DLQTopic,
+				msg.Key,
+				msg.Value,
+				append(msg.Headers, RecordHeader{
+					Key:   "x-original-topic",
+					Value: []byte(msg.Topic),
+				}, RecordHeader{
+					Key:   "x-original-error",
+					Value: []byte(err.Error()),
+				}),
+			)
+			if dlqErr != nil {
+				h.logger.Error("failed to send to DLQ", "error", dlqErr)
+				// Fallback to error return (effectively ignore with error log if caller logs it)
+				return fmt.Errorf("retries exhausted and DLQ failed: %w", dlqErr)
+			}
+			// DLQ success, considered handled
+			return nil
+		}
+		// DLQ not configured, fallthrough to error
+		return fmt.Errorf("retries exhausted and DLQ not configured")
+
+	case RetryStrategyLogAndIgnore:
+		h.logger.Error("message processing failed, skipping message",
 			"topic", msg.Topic,
 			"partition", msg.Partition,
 			"offset", msg.Offset,
-			"error", lastErr,
 		)
+		return nil // Return nil so ConsumeClaim marks it and moves on
 
-		dlqErr := h.retryPolicy.DLQProducer.PublishWithHeaders(
-			ctx,
-			h.retryPolicy.DLQTopic,
-			msg.Key,
-			msg.Value,
-			append(msg.Headers, RecordHeader{
-				Key:   "x-original-topic",
-				Value: []byte(msg.Topic),
-			}),
-		)
-		if dlqErr != nil {
-			h.logger.Error("failed to send to DLQ", "error", dlqErr)
-		}
+	default:
+		return fmt.Errorf("unknown retry strategy: %s", strategy)
 	}
-
-	return lastErr
-}
-
-// workerPool manages a pool of workers for processing messages
-type workerPool struct {
-	workers int
-	jobs    chan job
-	wg      sync.WaitGroup
-}
-
-type job struct {
-	ctx      context.Context
-	msg      *Message
-	handler  func(context.Context, *Message) error
-	callback func(*Message, error)
-}
-
-func newWorkerPool(workers, bufferSize int) *workerPool {
-	if workers <= 0 {
-		workers = 1
-	}
-	if bufferSize <= 0 {
-		bufferSize = 100
-	}
-
-	wp := &workerPool{
-		workers: workers,
-		jobs:    make(chan job, bufferSize),
-	}
-
-	// Start workers
-	for i := 0; i < workers; i++ {
-		wp.wg.Add(1)
-		go wp.worker()
-	}
-
-	return wp
-}
-
-func (wp *workerPool) worker() {
-	defer wp.wg.Done()
-
-	for job := range wp.jobs {
-		err := job.handler(job.ctx, job.msg)
-		if job.callback != nil {
-			job.callback(job.msg, err)
-		}
-	}
-}
-
-func (wp *workerPool) Submit(ctx context.Context, msg *Message, handler func(context.Context, *Message) error, callback func(*Message, error)) {
-	select {
-	case wp.jobs <- job{ctx: ctx, msg: msg, handler: handler, callback: callback}:
-	case <-ctx.Done():
-		// Context cancelled, don't submit
-	}
-}
-
-func (wp *workerPool) Close() {
-	close(wp.jobs)
-	wp.wg.Wait()
 }

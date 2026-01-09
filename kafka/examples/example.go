@@ -208,13 +208,12 @@ func runConsumer(ctx context.Context, cfg kafka.Config, topic string, logger *sl
 
 	// Subscribe options with 10 workers
 	opts := &kafka.SubscribeOptions{
-		Workers:    10, // 10 concurrent workers
-		BufferSize: 100,
 		Interceptors: []kafka.Interceptor{
 			kafka.RecoveryInterceptor(logger),
 			kafka.MetricsInterceptor(),
 		},
 		RetryPolicy: &kafka.RetryPolicy{
+			Strategy:     kafka.RetryStrategyInfinite,
 			MaxRetries:   3,
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     30 * time.Second,
