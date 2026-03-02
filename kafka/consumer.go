@@ -314,7 +314,6 @@ func (h *consumerGroupHandler) convertMessage(msg *sarama.ConsumerMessage, ctx c
 
 // processWithRetry processes a message with retry logic
 func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Message, handler Handler) error {
-	var err error
 	if h.retryPolicy == nil {
 		return handler(ctx, msg)
 	}
@@ -395,7 +394,7 @@ func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Messag
 					Value: []byte(msg.Topic),
 				}, RecordHeader{
 					Key:   "x-original-error",
-					Value: []byte(err.Error()),
+					Value: []byte(fmt.Sprint("retries exhausted after %d attempts", maxRetries)),
 				}),
 			)
 			if dlqErr != nil {

@@ -24,6 +24,7 @@ func NewProducer(cfg Config) (Producer, error) {
 	}
 
 	saramaConfig := sarama.NewConfig()
+	saramaConfig.Producer.Partitioner = sarama.NewHashPartitioner
 	saramaConfig.ClientID = cfg.ClientID
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.Return.Errors = true
