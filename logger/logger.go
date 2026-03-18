@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"os"
@@ -12,7 +13,10 @@ import (
 // It returns the configured logger (which is also set as default).
 func Init(cfg Config) (*slog.Logger, func(), error) {
 	// 1. Parsing Levels
-	defaultLvl := ParseLevel(cfg.Levels.DefaultLevel)
+	defaultLvl, err := ParseLevelChecked(cfg.Levels.DefaultLevel)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid default log level: %w", err)
+	}
 	subLevels := make(map[string]slog.Level)
 
 	if cfg.Levels.SubsystemLevelsRaw != "" {
@@ -20,7 +24,15 @@ func Init(cfg Config) (*slog.Logger, func(), error) {
 		for part := range parts {
 			kv := strings.Split(strings.TrimSpace(part), "=")
 			if len(kv) == 2 {
-				subLevels[kv[0]] = ParseLevel(kv[1])
+				subsystem := strings.TrimSpace(kv[0])
+				if subsystem == "" {
+					continue
+				}
+				level, levelErr := ParseLevelChecked(kv[1])
+				if levelErr != nil {
+					return nil, nil, fmt.Errorf("invalid log level for subsystem %q: %w", subsystem, levelErr)
+				}
+				subLevels[subsystem] = level
 			}
 		}
 	}

@@ -111,10 +111,3 @@ Automatically masks sensitive fields in logs.
 
 **Default Redaction Keys:**
 `authorization`, `cookie`, `set-cookie`, `password`, `passwd`, `token`, `access_token`, `refresh_token`, `secret`, `api_key`, `x-api-key`
-
-### Stacktraces
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOG_STACK_ENABLED` | `false` | Enable automatic stacktrace logging. |
-| `LOG_STACK_LEVEL` | `error` | Minimum log level to attach stacktraces to. |

@@ -14,7 +14,7 @@ type SubsystemHandler struct {
 
 func (h *SubsystemHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	// Atomic load - no lock needed
-	cfg := GetConfig()
+	cfg := getConfig()
 	subLogLevel, ok := cfg.Levels.SubsystemLevels[h.subSystemName]
 
 	if !ok {
