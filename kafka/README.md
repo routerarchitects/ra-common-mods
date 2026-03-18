@@ -5,7 +5,7 @@ Common Golang Kafka module providing opininated producer and consumer functional
 ## Features
 
 - **Producer**: Synchronous message publishing with SASL/TLS support
-- **Consumer**: Built-in worker pool management with automatic offset tracking
+- **Consumer**: Sarama consumer-group based consumption with retry support
 - **Retry Logic**: Exponential backoff with configurable DLQ
 - **Middleware/Interceptors**: Logging, recovery, metrics, and tracing
 - **SASL Authentication**: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
@@ -77,6 +77,7 @@ import (
     "os"
     "os/signal"
     "syscall"
+    "time"
     
     "github.com/routerarchitects/ra-common-mods/kafka"
 )
@@ -119,14 +120,14 @@ func main() {
     
     // Subscribe with options
     opts := &kafka.SubscribeOptions{
-        Workers: 5, // Process messages concurrently with 5 workers
-        BufferSize: 100,
+        AutoCommit: 5 * time.Second,
         Interceptors: []kafka.Interceptor{
             kafka.LoggingInterceptor(logger),
             kafka.RecoveryInterceptor(logger),
             kafka.MetricsInterceptor(),
         },
         RetryPolicy: &kafka.RetryPolicy{
+            Strategy: kafka.RetryStrategyDLQ,
             MaxRetries: 3,
             InitialDelay: 100 * time.Millisecond,
             MaxDelay: 30 * time.Second,
@@ -151,36 +152,35 @@ You can load configuration from environment variables or config files:
 
 ```go
 cfg := kafka.Config{
-    Brokers: []string{os.Getenv("KAFKA_BROKERS")},
+    Brokers: strings.Split(os.Getenv("KAFKA_BROKERS"), ","),
     ClientID: os.Getenv("KAFKA_CLIENT_ID"),
     Auth: kafka.AuthConfig{
         SASL: kafka.SASLConfig{
-            Enabled: os.Getenv("KAFKA_SASL_ENABLED") == "true",
-            Mechanism: os.Getenv("KAFKA_SASL_MECHANISM"), // PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
-            Username: os.Getenv("KAFKA_SASL_USERNAME"),
-            Password: os.Getenv("KAFKA_SASL_PASSWORD"),
+            Enabled: os.Getenv("KAFKA_AUTH_SASL_ENABLED") == "true",
+            Mechanism: os.Getenv("KAFKA_AUTH_SASL_MECHANISM"), // PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
+            Username: os.Getenv("KAFKA_AUTH_SASL_USERNAME"),
+            Password: os.Getenv("KAFKA_AUTH_SASL_PASSWORD"),
         },
         TLS: kafka.TLSConfig{
-            Enabled: os.Getenv("KAFKA_TLS_ENABLED") == "true",
-            CertFile: os.Getenv("KAFKA_TLS_CERT_FILE"),
-            KeyFile: os.Getenv("KAFKA_TLS_KEY_FILE"),
-            CAFile: os.Getenv("KAFKA_TLS_CA_FILE"),
+            Enabled: os.Getenv("KAFKA_AUTH_TLS_ENABLED") == "true",
+            CertFile: os.Getenv("KAFKA_AUTH_TLS_CERT_FILE"),
+            KeyFile: os.Getenv("KAFKA_AUTH_TLS_KEY_FILE"),
+            CAFile: os.Getenv("KAFKA_AUTH_TLS_CA_FILE"),
         },
     },
     Consumer: kafka.ConsumerConfig{
         GroupID: os.Getenv("KAFKA_CONSUMER_GROUP_ID"),
-        InitialOffset: "newest", // or "oldest"
+        Topics: strings.Split(os.Getenv("KAFKA_CONSUMER_TOPICS"), ","),
+        InitialOffset: os.Getenv("KAFKA_CONSUMER_INITIAL_OFFSET"), // "newest" or "oldest"
+        CommitInterval: 5 * time.Second,
     },
 }
 ```
 
-## Worker Pool Design
+## Consumption Model
 
-The consumer uses a built-in worker pool to process messages concurrently:
-
-- **Per-Partition Workers**: Workers are assigned per partition to maintain Kafka's ordering guarantees
-- **Automatic Offset Management**: Offsets are committed only after successful processing
-- **Backpressure**: Buffered channels prevent overwhelming workers
+The consumer processes messages synchronously per claim and marks offsets after processing.
+Commit behavior is controlled by `SubscribeOptions.AutoCommit` and consumer commit settings.
 
 ## Retry & DLQ
 
@@ -188,7 +188,10 @@ Failed messages are automatically retried with exponential backoff:
 
 1. Message fails → Retry with `InitialDelay`
 2. Exponential backoff → Multiply delay by `Multiplier` 
-3. Max retries exhausted → Send to DLQ topic (if configured)
+3. Max retries exhausted:
+   - `RetryStrategyDLQ`: Send to DLQ topic (if configured)
+   - `RetryStrategyLogAndIgnore`: Log and skip message
+   - `RetryStrategyInfinite`: Retry until success or context cancellation
 
 ## Middleware/Interceptors
 
@@ -198,7 +201,3 @@ Built-in interceptors for cross-cutting concerns:
 - **RecoveryInterceptor**: Recovers from panics
 - **MetricsInterceptor**: Tracks metrics (integrate with Prometheus)
 - **TracingInterceptor**: Trace context propagation (integrate with OpenTelemetry)
-
-## License
-
-MIT

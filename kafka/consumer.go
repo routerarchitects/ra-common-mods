@@ -280,7 +280,7 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 			// Mark offset
 			session.MarkMessage(msg, "")
 			// If auto-commit is disabled, commit immediately (Synchronous Commit)
-			if h.opts.AutoCommit <= 0 {
+			if h.opts.AutoCommit < 0 {
 				session.Commit()
 			}
 
@@ -360,7 +360,7 @@ func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Messag
 			}
 		}
 
-		err := handler(ctx, msg)
+		err = handler(ctx, msg)
 		if err == nil {
 			return nil
 		}
