@@ -1,2 +1,4 @@
 github.com/caarlos0/env/v11 v11.3.1 h1:cArPWC15hWmEt+gWk7YBi7lEXTXCvpaSdCiZE2X5mCA=
 github.com/caarlos0/env/v11 v11.3.1/go.mod h1:qupehSf/Y0TUTsxKywqRt/vJjN5nz6vauiYEUUr8P4U=
+github.com/routerarchitects/ra-common-mods/logger v0.1.0 h1:LQdbIRtK4bgtNZG5Ez6qfCrm4GKQP2ZG2HWItAR72pk=
+github.com/routerarchitects/ra-common-mods/logger v0.1.0/go.mod h1:UtabkmNZMfPaaM1Zzzt3RScSfCME3qnyKXeCRBH1LrM=
