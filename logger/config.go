@@ -8,7 +8,7 @@ import "log/slog"
 // It is intended to be populated via github.com/caarlos0/env parsing in services.
 type Config struct {
 	ServiceName    string `env:"SERVICE_NAME,required"`
-	ServiceVersion string `env:"SERVICE_VERSION,,required"`
+	ServiceVersion string `env:"SERVICE_VERSION,required"`
 	Environment    string `env:"ENVIRONMENT" envDefault:"dev"`
 
 	Output OutputConfig `envPrefix:"LOG_"`
