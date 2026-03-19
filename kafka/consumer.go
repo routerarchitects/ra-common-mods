@@ -262,6 +262,7 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 
 	// Start consuming in a loop (handles rebalancing)
 	go func() {
+		defer client.Close()
 		for {
 			select {
 			case <-ctx.Done():

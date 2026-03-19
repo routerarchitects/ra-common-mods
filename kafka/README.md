@@ -127,12 +127,7 @@ func main() {
             kafka.MetricsInterceptor(),
         },
         RetryPolicy: &kafka.RetryPolicy{
-            Strategy: kafka.RetryStrategyDLQ,
-            MaxRetries: 3,
-            InitialDelay: 100 * time.Millisecond,
-            MaxDelay: 30 * time.Second,
-            Multiplier: 2.0,
-            DLQTopic: "my-topic-dlq",
+            Strategy: kafka.RetryStrategyLogAndIgnore,
         },
     }
     
