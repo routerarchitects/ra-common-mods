@@ -59,7 +59,9 @@ type SubscribeOptions struct {
     // Channel buffer size (default: 100)
     BufferSize    int
     
-    // Auto-commit interval (0 = manual via Ack/Nack only)
+    // AutoCommit controls commit mode:
+    //   > 0 : auto-commit at this interval
+    //   = 0 : sync commit after each processed message
     AutoCommit    time.Duration
     
     // Retry policy for failed messages

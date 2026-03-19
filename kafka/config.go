@@ -86,7 +86,9 @@ type ConsumerConfig struct {
 	// MaxProcessingTime is the maximum time for processing a batch
 	MaxProcessingTime time.Duration `json:"max_processing_time" yaml:"max_processing_time" env:"MAX_PROCESSING_TIME" envDefault:"30s"`
 
-	// CommitInterval is how often to auto-commit offsets (0 = after each message processing a sync commit)
+	// CommitInterval controls commit mode:
+	//   > 0 : auto-commit at this interval
+	//   = 0 : sync commit after each processed message
 	CommitInterval time.Duration `json:"commit_interval" yaml:"commit_interval" env:"COMMIT_INTERVAL" envDefault:"5s"`
 }
 

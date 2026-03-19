@@ -182,6 +182,9 @@ cfg := kafka.Config{
 The consumer processes messages synchronously per claim and marks offsets after processing.
 Commit behavior is controlled by `SubscribeOptions.AutoCommit` and consumer commit settings.
 
+- `AutoCommit > 0`: offsets are auto-committed at the configured interval.
+- `AutoCommit == 0`: offsets are committed synchronously after each processed message.
+
 ## Retry & DLQ
 
 Failed messages are automatically retried with exponential backoff:

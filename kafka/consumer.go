@@ -152,6 +152,63 @@ func (c *consumer) Subscribe(ctx context.Context, topic string, handler Handler,
 	return c.SubscribeMultiple(ctx, []string{topic}, handler, opts)
 }
 
+func validateOpts(opts *SubscribeOptions) error {
+	if opts.AutoCommit < 0 {
+		return fmt.Errorf("auto-commit interval cannot be negative")
+	}
+	if opts.RetryPolicy == nil {
+		return nil
+	}
+
+	strategy := opts.RetryPolicy.Strategy
+	if strategy == "" {
+		strategy = RetryStrategyLogAndIgnore
+	}
+
+	if opts.RetryPolicy.MaxRetries < 0 {
+		return fmt.Errorf("retry policy max retries cannot be negative.")
+	}
+
+	switch strategy {
+	case RetryStrategyLogAndIgnore:
+		// No retry timing constraints are required; message is logged and skipped.
+		return nil
+
+	case RetryStrategyInfinite:
+		if opts.RetryPolicy.InitialDelay <= 0 {
+			return fmt.Errorf("retry policy initial delay must be greater than zero for infinite strategy")
+		}
+		if opts.RetryPolicy.MaxDelay <= 0 {
+			return fmt.Errorf("retry policy max delay must be greater than zero for infinite strategy")
+		}
+		if opts.RetryPolicy.Multiplier < 1 {
+			return fmt.Errorf("retry policy multiplier must be at least 1 for infinite strategy")
+		}
+		return nil
+
+	case RetryStrategyDLQ:
+		if opts.RetryPolicy.InitialDelay <= 0 {
+			return fmt.Errorf("retry policy initial delay must be greater than zero for dlq strategy")
+		}
+		if opts.RetryPolicy.MaxDelay <= 0 {
+			return fmt.Errorf("retry policy max delay must be greater than zero for dlq strategy")
+		}
+		if opts.RetryPolicy.Multiplier < 1 {
+			return fmt.Errorf("retry policy multiplier must be at least 1 for dlq strategy")
+		}
+		if opts.RetryPolicy.DLQTopic == "" {
+			return fmt.Errorf("DLQ topic must be specified for DLQ retry strategy")
+		}
+		if opts.RetryPolicy.DLQProducer == nil {
+			return fmt.Errorf("DLQ producer must be specified for DLQ retry strategy")
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("invalid retry strategy: %s", opts.RetryPolicy.Strategy)
+	}
+}
+
 // SubscribeMultiple subscribes to multiple topics with the same handler.
 func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handler Handler, opts *SubscribeOptions) error {
 	if len(topics) == 0 {
@@ -164,6 +221,11 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 
 	if opts == nil {
 		opts = DefaultSubscribeOptions()
+		opts.AutoCommit = c.config.Consumer.CommitInterval
+	}
+
+	if err := validateOpts(opts); err != nil {
+		return fmt.Errorf("invalid subscribe options: %w", err)
 	}
 
 	// Apply interceptors to handler
@@ -172,12 +234,14 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 		finalHandler = opts.Interceptors[i](finalHandler)
 	}
 
-	// Configure auto-commit override if needed
+	// Configure commit behavior.
+	// AutoCommit > 0: Sarama interval auto-commit
+	// AutoCommit == 0: disable auto-commit and sync-commit after each processed message
 	saramaConfig := *c.saramaConfig
 	if opts.AutoCommit > 0 {
 		saramaConfig.Consumer.Offsets.AutoCommit.Enable = true
 		saramaConfig.Consumer.Offsets.AutoCommit.Interval = opts.AutoCommit
-	} else if opts.AutoCommit == 0 {
+	} else {
 		saramaConfig.Consumer.Offsets.AutoCommit.Enable = false
 	}
 
@@ -190,10 +254,10 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 
 	// Create consumer group handler
 	consumerHandler := &consumerGroupHandler{
-		handler:     finalHandler,
-		opts:        opts,
-		logger:      c.logger,
-		retryPolicy: opts.RetryPolicy,
+		handler:         finalHandler,
+		logger:          c.logger,
+		retryPolicy:     opts.RetryPolicy,
+		commitAfterEach: opts.AutoCommit == 0,
 	}
 
 	// Start consuming in a loop (handles rebalancing)
@@ -229,10 +293,10 @@ func (c *consumer) Close() error {
 
 // consumerGroupHandler implements sarama.ConsumerGroupHandler
 type consumerGroupHandler struct {
-	handler     Handler
-	opts        *SubscribeOptions
-	logger      *slog.Logger
-	retryPolicy *RetryPolicy
+	handler         Handler
+	logger          *slog.Logger
+	retryPolicy     *RetryPolicy
+	commitAfterEach bool
 }
 
 // Setup is run at the beginning of a new session, before ConsumeClaim
@@ -269,18 +333,14 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 					"offset", kafkaMsg.Offset,
 					"error", err,
 				)
-				// We still mark the message to advance offset if we want to skip bad messages?
-				// But if we want DLQ, processWithRetry should have handled it.
-				// If processWithRetry returns error, it means all retries exhausted AND DLQ failed (or not configured).
-				// We proceed to mark it to avoid indefinite blocking on a "poison pill" that cannot be DLQ'd.
-				// However, strictly speaking, this logic depends on desired "At Least Once" vs "Skip Bad".
-				// Given we are moving to next message, we mark it.
+				// We still advance offsets after logging the failure.
+				// Final behavior on failures is controlled by retry strategy.
 			}
 
 			// Mark offset
 			session.MarkMessage(msg, "")
-			// If auto-commit is disabled, commit immediately (Synchronous Commit)
-			if h.opts.AutoCommit < 0 {
+			// If auto-commit is disabled via AutoCommit == 0, commit immediately.
+			if h.commitAfterEach {
 				session.Commit()
 			}
 
@@ -414,10 +474,17 @@ func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Messag
 			"topic", msg.Topic,
 			"partition", msg.Partition,
 			"offset", msg.Offset,
+			"error", err,
 		)
 		return nil // Return nil so ConsumeClaim marks it and moves on
 
 	default:
-		return fmt.Errorf("unknown retry strategy: %s", strategy)
+		h.logger.Error("Invalid retry strategy, treating as LogAndIgnore",
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
+			"error", err,
+		)
 	}
+	return nil
 }
