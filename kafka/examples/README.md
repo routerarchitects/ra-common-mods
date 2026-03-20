@@ -32,6 +32,9 @@ go run ./basic
 go run ./advanced
 ```
 
+Both examples read Kafka connection details from env-aware config.
+If `KAFKA_BROKERS` is not set, examples default to `localhost:9092`.
+
 ## Basic Example
 
 ### Producer Side
@@ -72,6 +75,8 @@ go run ./advanced
 2. DLQ flow verification
 3. Concurrency with multiple consumers in same group
 4. Independent consumers on different topics
+
+The advanced example prints an end-of-run scenario summary (`passed`/`failed`) for each scenario.
 
 ## Stopping the Example
 

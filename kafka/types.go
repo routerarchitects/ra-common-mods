@@ -46,8 +46,9 @@ type Consumer interface {
 // SubscribeOptions contains options for subscribing to topics.
 type SubscribeOptions struct {
 	// AutoCommit controls commit mode:
+	//   = -1: sync commit after each processed message
+	//   = 0 : inherit consumer CommitInterval (COMMIT_INTERVAL)
 	//   > 0 : auto-commit at this interval
-	//   = 0 : sync commit after each processed message
 	AutoCommit time.Duration
 
 	// Retry policy for failed messages
@@ -100,7 +101,7 @@ type RetryPolicy struct {
 // DefaultSubscribeOptions returns sensible defaults for subscription.
 func DefaultSubscribeOptions() *SubscribeOptions {
 	return &SubscribeOptions{
-		AutoCommit: 5 * time.Second,
+		AutoCommit: 0,
 		RetryPolicy: &RetryPolicy{
 			Strategy:     RetryStrategyLogAndIgnore,
 			MaxRetries:   3,

@@ -88,7 +88,9 @@ type ConsumerConfig struct {
 
 	// CommitInterval controls commit mode:
 	//   > 0 : auto-commit at this interval
-	//   = 0 : sync commit after each processed message
+	// Must be greater than zero.
+	// SubscribeOptions.AutoCommit can override this:
+	//   -1 per-message sync commit, 0 inherit CommitInterval, >0 interval commit.
 	CommitInterval time.Duration `json:"commit_interval" yaml:"commit_interval" env:"COMMIT_INTERVAL" envDefault:"5s"`
 }
 
@@ -115,27 +117,4 @@ type ProducerConfig struct {
 
 	// RetryBackoff is the backoff duration between retries
 	RetryBackoff time.Duration `json:"retry_backoff" yaml:"retry_backoff" env:"RETRY_BACKOFF" envDefault:"100ms"`
-}
-
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() Config {
-	return Config{
-		ClientID: "ra-kafka-client",
-		Consumer: ConsumerConfig{
-			InitialOffset:     "newest",
-			SessionTimeout:    10 * time.Second,
-			HeartbeatInterval: 3 * time.Second,
-			MaxProcessingTime: 30 * time.Second,
-			CommitInterval:    5 * time.Second,
-		},
-		Producer: ProducerConfig{
-			MaxMessageBytes: 1000000, // 1MB
-			RequiredAcks:    -1,      // Wait for all in-sync replicas
-			Timeout:         10 * time.Second,
-			Compression:     "snappy",
-			Idempotent:      true,
-			MaxRetries:      3,
-			RetryBackoff:    100 * time.Millisecond,
-		},
-	}
 }

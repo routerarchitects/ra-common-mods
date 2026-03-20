@@ -28,12 +28,17 @@ import (
     "context"
     "log"
     
+    "github.com/caarlos0/env/v11"
+    
     "github.com/routerarchitects/ra-common-mods/kafka"
 )
 
 func main() {
-    cfg := kafka.DefaultConfig()
-    cfg.Brokers = []string{"localhost:9092"}
+    var cfg kafka.Config
+    if err := env.Parse(&cfg); err != nil {
+        log.Fatal(err)
+    }
+    // Ensure required values are set (for example KAFKA_BROKERS).
     
     producer, err := kafka.NewProducer(cfg)
     if err != nil {
@@ -78,14 +83,18 @@ import (
     "os/signal"
     "syscall"
     "time"
+
+    "github.com/caarlos0/env/v11"
     
     "github.com/routerarchitects/ra-common-mods/kafka"
 )
 
 func main() {
-    cfg := kafka.DefaultConfig()
-    cfg.Brokers = []string{"localhost:9092"}
-    cfg.Consumer.GroupID = "my-consumer-group"
+    var cfg kafka.Config
+    if err := env.Parse(&cfg); err != nil {
+        log.Fatal(err)
+    }
+    // Ensure required values are set (for example KAFKA_BROKERS and KAFKA_CONSUMER_GROUP_ID).
     
     logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
     
@@ -143,42 +152,30 @@ func main() {
 
 ### Environment-Based Configuration
 
-You can load configuration from environment variables or config files:
+You can load configuration from environment variables directly using `github.com/caarlos0/env/v11`:
 
 ```go
-cfg := kafka.Config{
-    Brokers: strings.Split(os.Getenv("KAFKA_BROKERS"), ","),
-    ClientID: os.Getenv("KAFKA_CLIENT_ID"),
-    Auth: kafka.AuthConfig{
-        SASL: kafka.SASLConfig{
-            Enabled: os.Getenv("KAFKA_AUTH_SASL_ENABLED") == "true",
-            Mechanism: os.Getenv("KAFKA_AUTH_SASL_MECHANISM"), // PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
-            Username: os.Getenv("KAFKA_AUTH_SASL_USERNAME"),
-            Password: os.Getenv("KAFKA_AUTH_SASL_PASSWORD"),
-        },
-        TLS: kafka.TLSConfig{
-            Enabled: os.Getenv("KAFKA_AUTH_TLS_ENABLED") == "true",
-            CertFile: os.Getenv("KAFKA_AUTH_TLS_CERT_FILE"),
-            KeyFile: os.Getenv("KAFKA_AUTH_TLS_KEY_FILE"),
-            CAFile: os.Getenv("KAFKA_AUTH_TLS_CA_FILE"),
-        },
-    },
-    Consumer: kafka.ConsumerConfig{
-        GroupID: os.Getenv("KAFKA_CONSUMER_GROUP_ID"),
-        Topics: strings.Split(os.Getenv("KAFKA_CONSUMER_TOPICS"), ","),
-        InitialOffset: os.Getenv("KAFKA_CONSUMER_INITIAL_OFFSET"), // "newest" or "oldest"
-        CommitInterval: 5 * time.Second,
-    },
+var cfg kafka.Config
+if err := env.Parse(&cfg); err != nil {
+    log.Fatal(err)
 }
 ```
+
+`kafka.Config` already has `env` and `envDefault` tags, so parsing fills values from environment variables and applies defaults where defined.
+Minimum required env vars for a working consumer setup are:
+- `KAFKA_BROKERS`
+- `KAFKA_CONSUMER_GROUP_ID`
+- `KAFKA_CONSUMER_COMMIT_INTERVAL` (must be greater than zero if set)
 
 ## Consumption Model
 
 The consumer processes messages synchronously per claim and marks offsets after processing.
 Commit behavior is controlled by `SubscribeOptions.AutoCommit` and consumer commit settings.
+`Consumer.CommitInterval` (`COMMIT_INTERVAL`) must be greater than zero.
 
+- `AutoCommit == -1`: offsets are committed synchronously after each processed message.
+- `AutoCommit == 0`: inherit `Consumer.CommitInterval` (`COMMIT_INTERVAL`).
 - `AutoCommit > 0`: offsets are auto-committed at the configured interval.
-- `AutoCommit == 0`: offsets are committed synchronously after each processed message.
 
 ## Retry & DLQ
 

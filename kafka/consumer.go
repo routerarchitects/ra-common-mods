@@ -31,6 +31,9 @@ func NewConsumer(cfg Config, logger *slog.Logger) (Consumer, error) {
 	if cfg.Consumer.GroupID == "" {
 		return nil, fmt.Errorf("consumer group ID is required")
 	}
+	if cfg.Consumer.CommitInterval <= 0 {
+		return nil, fmt.Errorf("consumer commit interval must be greater than zero")
+	}
 
 	if logger == nil {
 		logger = slog.Default()
@@ -153,8 +156,8 @@ func (c *consumer) Subscribe(ctx context.Context, topic string, handler Handler,
 }
 
 func validateOpts(opts *SubscribeOptions) error {
-	if opts.AutoCommit < 0 {
-		return fmt.Errorf("auto-commit interval cannot be negative")
+	if opts.AutoCommit < -1 {
+		return fmt.Errorf("auto-commit must be -1 (per-message), 0 (inherit), or >0 (interval)")
 	}
 	if opts.RetryPolicy == nil {
 		return nil
@@ -221,7 +224,6 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 
 	if opts == nil {
 		opts = DefaultSubscribeOptions()
-		opts.AutoCommit = c.config.Consumer.CommitInterval
 	}
 
 	if err := validateOpts(opts); err != nil {
@@ -234,13 +236,19 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 		finalHandler = opts.Interceptors[i](finalHandler)
 	}
 
-	// Configure commit behavior.
-	// AutoCommit > 0: Sarama interval auto-commit
-	// AutoCommit == 0: disable auto-commit and sync-commit after each processed message
+	// Resolve commit mode:
+	//   AutoCommit == -1 : sync commit after each processed message
+	//   AutoCommit == 0  : inherit from consumer CommitInterval
+	//   AutoCommit > 0   : Sarama interval auto-commit
+	effectiveAutoCommit := opts.AutoCommit
+	if effectiveAutoCommit == 0 {
+		effectiveAutoCommit = c.config.Consumer.CommitInterval
+	}
+
 	saramaConfig := *c.saramaConfig
-	if opts.AutoCommit > 0 {
+	if effectiveAutoCommit > 0 {
 		saramaConfig.Consumer.Offsets.AutoCommit.Enable = true
-		saramaConfig.Consumer.Offsets.AutoCommit.Interval = opts.AutoCommit
+		saramaConfig.Consumer.Offsets.AutoCommit.Interval = effectiveAutoCommit
 	} else {
 		saramaConfig.Consumer.Offsets.AutoCommit.Enable = false
 	}
@@ -272,11 +280,14 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 		handler:         finalHandler,
 		logger:          c.logger,
 		retryPolicy:     opts.RetryPolicy,
-		commitAfterEach: opts.AutoCommit == 0,
+		commitAfterEach: effectiveAutoCommit == -1,
 	}
 
 	// Start consuming in a loop (handles rebalancing)
 	go func() {
+		retryDelay := 250 * time.Millisecond
+		const maxRetryDelay = 5 * time.Second
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -284,6 +295,20 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 			default:
 				if err := client.Consume(ctx, topics, consumerHandler); err != nil {
 					c.logger.Error("consumer error", "error", err)
+					// Back off on persistent consume failures to avoid hot error loops.
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(retryDelay):
+					}
+
+					retryDelay *= 2
+					if retryDelay > maxRetryDelay {
+						retryDelay = maxRetryDelay
+					}
+				} else {
+					// Reset backoff after a successful consume cycle.
+					retryDelay = 250 * time.Millisecond
 				}
 				// Check if context was cancelled
 				if ctx.Err() != nil {
@@ -354,7 +379,7 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 
 			// Mark offset
 			session.MarkMessage(msg, "")
-			// If auto-commit is disabled via AutoCommit == 0, commit immediately.
+			// If AutoCommit == -1 mode is active, commit immediately after each message.
 			if h.commitAfterEach {
 				session.Commit()
 			}

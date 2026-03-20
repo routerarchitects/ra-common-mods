@@ -54,8 +54,9 @@ type Message struct {
 type Handler func(ctx context.Context, msg *Message) error
 type SubscribeOptions struct {
     // AutoCommit controls commit mode:
+    //   = -1: sync commit after each processed message
+    //   = 0 : inherit consumer CommitInterval
     //   > 0 : auto-commit at this interval
-    //   = 0 : sync commit after each processed message
     AutoCommit    time.Duration
     
     // Retry policy for failed messages
@@ -64,6 +65,8 @@ type SubscribeOptions struct {
     // Interceptors to run before handler
     Interceptors  []Interceptor
 }
+
+Note: consumer `CommitInterval` is expected to be greater than zero when configured.
 type Consumer interface {
     // Subscribe to a topic with a handler.
     // This method blocks until ctx is cancelled.

@@ -179,6 +179,7 @@ func main() {
 			InitialOffset:     "newest",
 			SessionTimeout:    10 * time.Second,
 			HeartbeatInterval: 3 * time.Second,
+			CommitInterval:    5 * time.Second,
 		},
 		Producer: kafka.ProducerConfig{
 			RequiredAcks: -1,
@@ -299,7 +300,7 @@ func runRetrySuccessScenario(ctx context.Context, parentLog *slog.Logger, cfg ka
 	}
 
 	opts := kafka.DefaultSubscribeOptions()
-	opts.AutoCommit = time.Second * 5 // Auto-commit every 5 seconds (or on rebalance), but retries will cause re-delivery after session timeout
+	opts.AutoCommit = time.Second * 5 // >0 interval commit, 0 would inherit config.CommitInterval, -1 is per-message sync commit
 	opts.RetryPolicy = &kafka.RetryPolicy{
 		Strategy:     kafka.RetryStrategyInfinite, // Or ignore, but we want it to succeed eventually
 		MaxRetries:   5,
