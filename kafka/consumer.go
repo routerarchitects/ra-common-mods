@@ -252,6 +252,21 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 	}
 	c.client = client
 
+	// Sarama requires draining the Errors() channel when Consumer.Return.Errors is enabled.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err, ok := <-client.Errors():
+				if !ok {
+					return
+				}
+				c.logger.Error("consumer group reported error", "error", err)
+			}
+		}
+	}()
+
 	// Create consumer group handler
 	consumerHandler := &consumerGroupHandler{
 		handler:         finalHandler,
@@ -262,7 +277,6 @@ func (c *consumer) SubscribeMultiple(ctx context.Context, topics []string, handl
 
 	// Start consuming in a loop (handles rebalancing)
 	go func() {
-		defer client.Close()
 		for {
 			select {
 			case <-ctx.Done():
@@ -323,7 +337,7 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 			}
 
 			// Convert sarama message to our Message type
-			kafkaMsg := h.convertMessage(msg, session.Context())
+			kafkaMsg := h.convertMessage(msg)
 
 			// Process synchronously
 			err := h.processWithRetry(session.Context(), kafkaMsg, h.handler)
@@ -352,7 +366,7 @@ func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 }
 
 // convertMessage converts a Sarama message to our Message type
-func (h *consumerGroupHandler) convertMessage(msg *sarama.ConsumerMessage, ctx context.Context) *Message {
+func (h *consumerGroupHandler) convertMessage(msg *sarama.ConsumerMessage) *Message {
 	headers := make([]RecordHeader, len(msg.Headers))
 	for i, hdr := range msg.Headers {
 		headers[i] = RecordHeader{
@@ -369,7 +383,6 @@ func (h *consumerGroupHandler) convertMessage(msg *sarama.ConsumerMessage, ctx c
 		Offset:    msg.Offset,
 		Headers:   headers,
 		Timestamp: msg.Timestamp,
-		Context:   ctx,
 	}
 }
 

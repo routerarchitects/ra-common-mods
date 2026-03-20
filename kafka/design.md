@@ -40,7 +40,7 @@ type Producer interface {
     Close() error
 }
 3. Consumer Interface
-The consumer uses a Subscribe model with built-in worker pool management. This provides a cleaner API while maintaining flexibility.
+The consumer uses a Subscribe model built on Sarama consumer groups. Message handling is synchronous per claim in the current implementation.
 
 type Message struct {
     Key, Value []byte
@@ -50,15 +50,9 @@ type Message struct {
     Headers    []RecordHeader
     Timestamp  time.Time
 }
-// Handler processes a message. Return error to Nack, nil to Ack.
+// Handler processes a message. Return nil on success, error on failure.
 type Handler func(ctx context.Context, msg *Message) error
 type SubscribeOptions struct {
-    // Number of concurrent workers processing messages
-    Workers       int
-    
-    // Channel buffer size (default: 100)
-    BufferSize    int
-    
     // AutoCommit controls commit mode:
     //   > 0 : auto-commit at this interval
     //   = 0 : sync commit after each processed message
@@ -71,8 +65,8 @@ type SubscribeOptions struct {
     Interceptors  []Interceptor
 }
 type Consumer interface {
-    // Subscribe to a topic with a handler and worker pool.
-    // This method blocks until ctx is cancelled or a fatal error occurs.
+    // Subscribe to a topic with a handler.
+    // This method blocks until ctx is cancelled.
     Subscribe(ctx context.Context, topic string, handler Handler, opts *SubscribeOptions) error
     
     // SubscribeMultiple subscribes to multiple topics with the same handler.
@@ -82,10 +76,9 @@ type Consumer interface {
 }
 Key Benefits:
 
-Built-in Worker Pool: No need to manually spawn goroutines - specify Workers: 10 and the library handles it.
-Automatic Offset Management: The library tracks which offsets can be safely committed based on handler results.
-Per-Partition Ordering: Workers are assigned per-partition to maintain Kafka's ordering guarantees.
-Backpressure: Internal buffered channels prevent overwhelming the workers.
+Simple Subscribe API over Sarama consumer groups.
+Retry policy support with exponential backoff and optional DLQ.
+Interceptor support for cross-cutting concerns.
 4. Middleware / Interceptors
 Interceptors wrap the handler execution, allowing for cross-cutting concerns.
 
@@ -95,11 +88,10 @@ type Interceptor func(next Handler) Handler
 // - TracingInterceptor: Extract/inject trace context from headers
 // - LoggingInterceptor: Log message receipt and processing duration
 // - MetricsInterceptor: Track processed/failed message counts
-// - RecoveryInterceptor: Recover from panics and Nack the message
+// - RecoveryInterceptor: Recover from panics and return an error
 Example usage:
 
 opts := &kafka.SubscribeOptions{
-    Workers: 5,
     Interceptors: []kafka.Interceptor{
         kafka.TracingInterceptor(),
         kafka.LoggingInterceptor(logger),
@@ -121,9 +113,7 @@ type RetryPolicy struct {
 Behavior:
 
 If handler returns an error, the message is retried with exponential backoff
-Retries happen in-memory without re-consuming from Kafka (to maintain offset order)
-After MaxRetries, the message is either sent to DLQ or offset is committed with error logged
-Per-partition ordering is maintained during retries
+After MaxRetries, the message is either sent to DLQ or logged/ignored depending on strategy
 Proposed Changes
 Structure of src/ra-common-mods/kafka:
 

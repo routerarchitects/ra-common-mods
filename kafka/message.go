@@ -1,7 +1,6 @@
 package kafka
 
 import (
-	"context"
 	"time"
 )
 
@@ -27,9 +26,6 @@ type Message struct {
 
 	// Timestamp is when the message was produced
 	Timestamp time.Time
-
-	// Context carries request-scoped values (tracing, cancellation)
-	Context context.Context
 }
 
 // RecordHeader represents a Kafka record header (key-value pair).

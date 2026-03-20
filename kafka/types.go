@@ -31,7 +31,7 @@ type Producer interface {
 
 // Consumer defines the interface for consuming messages from Kafka.
 type Consumer interface {
-	// Subscribe to a topic with a handler and worker pool.
+	// Subscribe to a topic with a handler.
 	// This method blocks until ctx is cancelled.
 	// Consumer errors are logged internally by the consume loop.
 	Subscribe(ctx context.Context, topic string, handler Handler, opts *SubscribeOptions) error
