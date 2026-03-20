@@ -481,7 +481,7 @@ func (h *consumerGroupHandler) processWithRetry(ctx context.Context, msg *Messag
 				"topic", msg.Topic,
 				"partition", msg.Partition,
 				"offset", msg.Offset,
-				"error", "retries exhausted", // We don't have the last specific error easily here without tracking, but context is clear
+				"error", "retries exhausted",
 			)
 
 			dlqErr := h.retryPolicy.DLQProducer.PublishWithHeaders(

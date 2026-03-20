@@ -1,6 +1,6 @@
 # Kafka Module
 
-Common Golang Kafka module providing opininated producer and consumer functionality for microservices.
+Common Golang Kafka module providing opinionated producer and consumer functionality for microservices.
 
 ## Features
 
@@ -166,6 +166,10 @@ Minimum required env vars for a working consumer setup are:
 - `KAFKA_BROKERS`
 - `KAFKA_CONSUMER_GROUP_ID`
 - `KAFKA_CONSUMER_COMMIT_INTERVAL` (must be greater than zero if set)
+
+Topic subscription is runtime-driven, not config-driven:
+- Use `consumer.Subscribe(ctx, topic, ...)` for a single topic.
+- Use `consumer.SubscribeMultiple(ctx, topics, ...)` for multiple topics.
 
 ## Consumption Model
 

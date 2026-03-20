@@ -70,9 +70,6 @@ type ConsumerConfig struct {
 	// GroupID is the consumer group ID
 	GroupID string `json:"group_id" yaml:"group_id" env:"GROUP_ID"`
 
-	// Topics is the list of topics to subscribe to
-	Topics []string `json:"topics" yaml:"topics" env:"TOPICS" envSeparator:","`
-
 	// InitialOffset determines where to start consuming (oldest/newest)
 	// Valid values: "oldest", "newest"
 	InitialOffset string `json:"initial_offset" yaml:"initial_offset" env:"INITIAL_OFFSET" envDefault:"newest"`
