@@ -1,11 +1,11 @@
 # Kafka Module
 
-Common Golang Kafka module providing opininated producer and consumer functionality for microservices.
+Common Golang Kafka module providing opinionated producer and consumer functionality for microservices.
 
 ## Features
 
 - **Producer**: Synchronous message publishing with SASL/TLS support
-- **Consumer**: Built-in worker pool management with automatic offset tracking
+- **Consumer**: Sarama consumer-group based consumption with retry support
 - **Retry Logic**: Exponential backoff with configurable DLQ
 - **Middleware/Interceptors**: Logging, recovery, metrics, and tracing
 - **SASL Authentication**: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
@@ -28,12 +28,17 @@ import (
     "context"
     "log"
     
+    "github.com/caarlos0/env/v11"
+    
     "github.com/routerarchitects/ra-common-mods/kafka"
 )
 
 func main() {
-    cfg := kafka.DefaultConfig()
-    cfg.Brokers = []string{"localhost:9092"}
+    var cfg kafka.Config
+    if err := env.Parse(&cfg); err != nil {
+        log.Fatal(err)
+    }
+    // Ensure required values are set (for example KAFKA_BROKERS).
     
     producer, err := kafka.NewProducer(cfg)
     if err != nil {
@@ -77,14 +82,19 @@ import (
     "os"
     "os/signal"
     "syscall"
+    "time"
+
+    "github.com/caarlos0/env/v11"
     
     "github.com/routerarchitects/ra-common-mods/kafka"
 )
 
 func main() {
-    cfg := kafka.DefaultConfig()
-    cfg.Brokers = []string{"localhost:9092"}
-    cfg.Consumer.GroupID = "my-consumer-group"
+    var cfg kafka.Config
+    if err := env.Parse(&cfg); err != nil {
+        log.Fatal(err)
+    }
+    // Ensure required values are set (for example KAFKA_BROKERS and KAFKA_CONSUMER_GROUP_ID).
     
     logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
     
@@ -119,19 +129,14 @@ func main() {
     
     // Subscribe with options
     opts := &kafka.SubscribeOptions{
-        Workers: 5, // Process messages concurrently with 5 workers
-        BufferSize: 100,
+        AutoCommit: 5 * time.Second,
         Interceptors: []kafka.Interceptor{
             kafka.LoggingInterceptor(logger),
             kafka.RecoveryInterceptor(logger),
             kafka.MetricsInterceptor(),
         },
         RetryPolicy: &kafka.RetryPolicy{
-            MaxRetries: 3,
-            InitialDelay: 100 * time.Millisecond,
-            MaxDelay: 30 * time.Second,
-            Multiplier: 2.0,
-            DLQTopic: "my-topic-dlq",
+            Strategy: kafka.RetryStrategyLogAndIgnore,
         },
     }
     
@@ -147,40 +152,34 @@ func main() {
 
 ### Environment-Based Configuration
 
-You can load configuration from environment variables or config files:
+You can load configuration from environment variables directly using `github.com/caarlos0/env/v11`:
 
 ```go
-cfg := kafka.Config{
-    Brokers: []string{os.Getenv("KAFKA_BROKERS")},
-    ClientID: os.Getenv("KAFKA_CLIENT_ID"),
-    Auth: kafka.AuthConfig{
-        SASL: kafka.SASLConfig{
-            Enabled: os.Getenv("KAFKA_SASL_ENABLED") == "true",
-            Mechanism: os.Getenv("KAFKA_SASL_MECHANISM"), // PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
-            Username: os.Getenv("KAFKA_SASL_USERNAME"),
-            Password: os.Getenv("KAFKA_SASL_PASSWORD"),
-        },
-        TLS: kafka.TLSConfig{
-            Enabled: os.Getenv("KAFKA_TLS_ENABLED") == "true",
-            CertFile: os.Getenv("KAFKA_TLS_CERT_FILE"),
-            KeyFile: os.Getenv("KAFKA_TLS_KEY_FILE"),
-            CAFile: os.Getenv("KAFKA_TLS_CA_FILE"),
-        },
-    },
-    Consumer: kafka.ConsumerConfig{
-        GroupID: os.Getenv("KAFKA_CONSUMER_GROUP_ID"),
-        InitialOffset: "newest", // or "oldest"
-    },
+var cfg kafka.Config
+if err := env.Parse(&cfg); err != nil {
+    log.Fatal(err)
 }
 ```
 
-## Worker Pool Design
+`kafka.Config` already has `env` and `envDefault` tags, so parsing fills values from environment variables and applies defaults where defined.
+Minimum required env vars for a working consumer setup are:
+- `KAFKA_BROKERS`
+- `KAFKA_CONSUMER_GROUP_ID`
+- `KAFKA_CONSUMER_COMMIT_INTERVAL` (must be greater than zero if set)
 
-The consumer uses a built-in worker pool to process messages concurrently:
+Topic subscription is runtime-driven, not config-driven:
+- Use `consumer.Subscribe(ctx, topic, ...)` for a single topic.
+- Use `consumer.SubscribeMultiple(ctx, topics, ...)` for multiple topics.
 
-- **Per-Partition Workers**: Workers are assigned per partition to maintain Kafka's ordering guarantees
-- **Automatic Offset Management**: Offsets are committed only after successful processing
-- **Backpressure**: Buffered channels prevent overwhelming workers
+## Consumption Model
+
+The consumer processes messages synchronously per claim and marks offsets after processing.
+Commit behavior is controlled by `SubscribeOptions.AutoCommit` and consumer commit settings.
+`Consumer.CommitInterval` (`COMMIT_INTERVAL`) must be greater than zero.
+
+- `AutoCommit == -1`: offsets are committed synchronously after each processed message.
+- `AutoCommit == 0`: inherit `Consumer.CommitInterval` (`COMMIT_INTERVAL`).
+- `AutoCommit > 0`: offsets are auto-committed at the configured interval.
 
 ## Retry & DLQ
 
@@ -188,7 +187,10 @@ Failed messages are automatically retried with exponential backoff:
 
 1. Message fails → Retry with `InitialDelay`
 2. Exponential backoff → Multiply delay by `Multiplier` 
-3. Max retries exhausted → Send to DLQ topic (if configured)
+3. Max retries exhausted:
+   - `RetryStrategyDLQ`: Send to DLQ topic (if configured)
+   - `RetryStrategyLogAndIgnore`: Log and skip message
+   - `RetryStrategyInfinite`: Retry until success or context cancellation
 
 ## Middleware/Interceptors
 
@@ -198,7 +200,3 @@ Built-in interceptors for cross-cutting concerns:
 - **RecoveryInterceptor**: Recovers from panics
 - **MetricsInterceptor**: Tracks metrics (integrate with Prometheus)
 - **TracingInterceptor**: Trace context propagation (integrate with OpenTelemetry)
-
-## License
-
-MIT

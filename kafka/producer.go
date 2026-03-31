@@ -24,7 +24,6 @@ func NewProducer(cfg Config) (Producer, error) {
 	}
 
 	saramaConfig := sarama.NewConfig()
-	saramaConfig.Producer.Partitioner = sarama.NewHashPartitioner
 	saramaConfig.ClientID = cfg.ClientID
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.Return.Errors = true
@@ -167,7 +166,7 @@ func (p *producer) PublishWithHeaders(ctx context.Context, topic string, key, va
 	// Send message
 	_, _, err := p.syncProducer.SendMessage(msg)
 	if err != nil {
-		return fmt.Errorf("failed to publish message: %w", err)
+		return fmt.Errorf("failed to publish message on topic: %s : %w", topic, err)
 	}
 
 	return nil

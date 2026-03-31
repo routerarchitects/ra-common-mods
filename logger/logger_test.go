@@ -78,7 +78,9 @@ func TestLoggerFlow(t *testing.T) {
 
 	// C. Subsystem Log (DB=debug, should show)
 	// We must register the "db" subsystem with Debug level for it to show
-	UpdateSubsystemLevels(map[string]string{"db": "debug"})
+	if err := UpdateSubsystemLevels(map[string]string{"db": "debug"}); err != nil {
+		t.Fatalf("expected subsystem update to succeed, got error: %v", err)
+	}
 
 	dbLog := l.With("subsystem", "db")
 	dbLog.DebugContext(ctx, "db query")
@@ -86,4 +88,57 @@ func TestLoggerFlow(t *testing.T) {
 		t.Error("Expected db debug message to show")
 	}
 	buf.Reset()
+}
+
+func TestGetCopyConfigReturnsCopy(t *testing.T) {
+	globalConfig.Store(Config{
+		Levels: LevelsConfig{
+			DefaultLevel:    "info",
+			SubsystemLevels: map[string]slog.Level{"db": slog.LevelDebug},
+		},
+	})
+
+	cfg := GetCopyConfig()
+	cfg.Levels.SubsystemLevels["db"] = slog.LevelError
+	cfg.Levels.SubsystemLevels["new"] = slog.LevelWarn
+
+	fresh := getConfig()
+	if fresh.Levels.SubsystemLevels["db"] != slog.LevelDebug {
+		t.Fatalf("expected internal config to stay unchanged, got db=%s", fresh.Levels.SubsystemLevels["db"])
+	}
+	if _, ok := fresh.Levels.SubsystemLevels["new"]; ok {
+		t.Fatal("expected mutation on returned config map to not leak into global state")
+	}
+}
+
+func TestUpdateSubsystemLevelsRejectsInvalidLevel(t *testing.T) {
+	globalConfig.Store(Config{
+		Levels: LevelsConfig{
+			DefaultLevel:    "info",
+			SubsystemLevels: map[string]slog.Level{"db": slog.LevelDebug},
+		},
+	})
+
+	if err := UpdateSubsystemLevels(map[string]string{"db": "not-a-level"}); err == nil {
+		t.Fatal("expected invalid subsystem level to return an error")
+	}
+
+	cfg := getConfig()
+	if cfg.Levels.SubsystemLevels["db"] != slog.LevelDebug {
+		t.Fatalf("expected db level to remain debug after failed update, got %s", cfg.Levels.SubsystemLevels["db"])
+	}
+}
+
+func TestInitRejectsInvalidDefaultLevel(t *testing.T) {
+	_, _, err := Init(Config{
+		ServiceName:    "svc",
+		ServiceVersion: "1.0.0",
+		Environment:    "dev",
+		Levels: LevelsConfig{
+			DefaultLevel: "not-a-level",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid default log level to fail Init")
+	}
 }

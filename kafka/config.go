@@ -70,9 +70,6 @@ type ConsumerConfig struct {
 	// GroupID is the consumer group ID
 	GroupID string `json:"group_id" yaml:"group_id" env:"GROUP_ID"`
 
-	// Topics is the list of topics to subscribe to
-	Topics []string `json:"topics" yaml:"topics" env:"TOPICS" envSeparator:","`
-
 	// InitialOffset determines where to start consuming (oldest/newest)
 	// Valid values: "oldest", "newest"
 	InitialOffset string `json:"initial_offset" yaml:"initial_offset" env:"INITIAL_OFFSET" envDefault:"newest"`
@@ -86,7 +83,11 @@ type ConsumerConfig struct {
 	// MaxProcessingTime is the maximum time for processing a batch
 	MaxProcessingTime time.Duration `json:"max_processing_time" yaml:"max_processing_time" env:"MAX_PROCESSING_TIME" envDefault:"30s"`
 
-	// CommitInterval is how often to auto-commit offsets (0 = after each message processing a sync commit)
+	// CommitInterval controls commit mode:
+	//   > 0 : auto-commit at this interval
+	// Must be greater than zero.
+	// SubscribeOptions.AutoCommit can override this:
+	//   -1 per-message sync commit, 0 inherit CommitInterval, >0 interval commit.
 	CommitInterval time.Duration `json:"commit_interval" yaml:"commit_interval" env:"COMMIT_INTERVAL" envDefault:"5s"`
 }
 
@@ -113,27 +114,4 @@ type ProducerConfig struct {
 
 	// RetryBackoff is the backoff duration between retries
 	RetryBackoff time.Duration `json:"retry_backoff" yaml:"retry_backoff" env:"RETRY_BACKOFF" envDefault:"100ms"`
-}
-
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() Config {
-	return Config{
-		ClientID: "ra-kafka-client",
-		Consumer: ConsumerConfig{
-			InitialOffset:     "newest",
-			SessionTimeout:    10 * time.Second,
-			HeartbeatInterval: 3 * time.Second,
-			MaxProcessingTime: 30 * time.Second,
-			CommitInterval:    5 * time.Second,
-		},
-		Producer: ProducerConfig{
-			MaxMessageBytes: 1000000, // 1MB
-			RequiredAcks:    -1,      // Wait for all in-sync replicas
-			Timeout:         10 * time.Second,
-			Compression:     "snappy",
-			Idempotent:      true,
-			MaxRetries:      3,
-			RetryBackoff:    100 * time.Millisecond,
-		},
-	}
 }

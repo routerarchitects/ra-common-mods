@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"sync"
@@ -13,6 +14,14 @@ var (
 	mu           sync.Mutex
 )
 
+func getConfig() Config {
+	val := globalConfig.Load()
+	if val == nil {
+		return Config{}
+	}
+	return val.(Config)
+}
+
 // Subsystem returns a logger with the subsystem attribute pre-bound.
 // This is a helper for services.
 func Subsystem(name string) *slog.Logger {
@@ -20,7 +29,7 @@ func Subsystem(name string) *slog.Logger {
 	defer mu.Unlock()
 
 	// Re-read config under lock in case it changed
-	cfg := GetConfig()
+	cfg := getConfig()
 	if _, ok := cfg.Levels.SubsystemLevels[name]; ok {
 		return L().With("subsystem", name)
 	}
@@ -38,11 +47,7 @@ func Subsystem(name string) *slog.Logger {
 
 // GetCopyConfig returns a copy of the current config.
 func GetCopyConfig() Config {
-	val := globalConfig.Load()
-	if val == nil {
-		return Config{}
-	}
-	cfg := val.(Config)
+	cfg := getConfig()
 
 	// Copy-On-Write: Create new map
 	newLevels := make(map[string]slog.Level)
@@ -53,20 +58,11 @@ func GetCopyConfig() Config {
 	return cfg
 }
 
-// GetConfig returns the current config.
-func GetConfig() Config {
-	val := globalConfig.Load()
-	if val == nil {
-		return Config{}
-	}
-	return val.(Config)
-}
-
 // GetSubsystemLevels returns a copy of current levels.
 func GetSubsystemLevels() map[string]string {
 	levels := make(map[string]string)
 
-	cfg := GetConfig()
+	cfg := getConfig()
 
 	for k, v := range cfg.Levels.SubsystemLevels {
 		levels[k] = v.String()
@@ -83,7 +79,11 @@ func UpdateSubsystemLevels(levels map[string]string) error {
 
 	// Apply updates
 	for k, v := range levels {
-		cfg.Levels.SubsystemLevels[k] = ParseLevel(v)
+		level, err := ParseLevelChecked(v)
+		if err != nil {
+			return fmt.Errorf("invalid log level for subsystem %q: %w", k, err)
+		}
+		cfg.Levels.SubsystemLevels[k] = level
 	}
 
 	// Update config

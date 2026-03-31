@@ -2,8 +2,6 @@ module github.com/routerarchitects/ra-common-mods/kafka
 
 go 1.25.0
 
-replace github.com/routerarchitects/ra-common-mods/logger => ./../logger
-
 require (
 	github.com/IBM/sarama v1.43.3
 	github.com/xdg-go/scram v1.2.0

@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-// Handler processes a message. Return error to Nack, nil to Ack.
+// Handler processes a message.
+// Return nil on success.
+// Return error on failure so retry policy/logging can handle it.
 type Handler func(ctx context.Context, msg *Message) error
 
 // Interceptor wraps a handler with additional behavior (logging, metrics, tracing, etc.)
@@ -29,8 +31,9 @@ type Producer interface {
 
 // Consumer defines the interface for consuming messages from Kafka.
 type Consumer interface {
-	// Subscribe to a topic with a handler and worker pool.
-	// This method blocks until ctx is cancelled or a fatal error occurs.
+	// Subscribe to a topic with a handler.
+	// This method blocks until ctx is cancelled.
+	// Consumer errors are logged internally by the consume loop.
 	Subscribe(ctx context.Context, topic string, handler Handler, opts *SubscribeOptions) error
 
 	// SubscribeMultiple subscribes to multiple topics with the same handler.
@@ -42,7 +45,10 @@ type Consumer interface {
 
 // SubscribeOptions contains options for subscribing to topics.
 type SubscribeOptions struct {
-	// AutoCommit interval (0 = manual via handler return only)
+	// AutoCommit controls commit mode:
+	//   = -1: sync commit after each processed message
+	//   = 0 : inherit consumer CommitInterval (COMMIT_INTERVAL)
+	//   > 0 : auto-commit at this interval
 	AutoCommit time.Duration
 
 	// Retry policy for failed messages
@@ -95,7 +101,7 @@ type RetryPolicy struct {
 // DefaultSubscribeOptions returns sensible defaults for subscription.
 func DefaultSubscribeOptions() *SubscribeOptions {
 	return &SubscribeOptions{
-		AutoCommit: -1,
+		AutoCommit: 0,
 		RetryPolicy: &RetryPolicy{
 			Strategy:     RetryStrategyLogAndIgnore,
 			MaxRetries:   3,
