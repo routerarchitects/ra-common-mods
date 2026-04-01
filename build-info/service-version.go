@@ -1,7 +1,6 @@
 package build_info
 
 import (
-	"fmt"
 	"runtime/debug"
 )
 
@@ -9,7 +8,7 @@ var version = ""
 var buildTimestamp = ""
 var commitHash = ""
 
-func getVersion() string {
+func GetVersion() string {
 	return version
 }
 
@@ -17,12 +16,7 @@ func GetBuildTimestamp() string {
 	return buildTimestamp
 }
 
-func getCommitHash() string {
-	return commitHash
-}
-
-func makeCommitHash() string {
-	commitHash := getCommitHash()
+func GetCommitHash() string {
 	if commitHash == "" {
 		info, ok := debug.ReadBuildInfo()
 		if ok {
@@ -34,15 +28,4 @@ func makeCommitHash() string {
 		}
 	}
 	return commitHash
-}
-
-func GetFullVersion() string {
-	version := getVersion()
-
-	if version == "" {
-		return makeCommitHash()
-	} else {
-		return fmt.Sprintf("%s-%s", version, makeCommitHash())
-	}
-
 }
