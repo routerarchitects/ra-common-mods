@@ -1,4 +1,4 @@
-package build_info
+package buildinfo
 
 import (
 	"runtime/debug"
@@ -22,7 +22,7 @@ func GetCommitHash() string {
 		if ok {
 			for _, s := range info.Settings {
 				if s.Key == "vcs.revision" {
-					commitHash = s.Value
+					return s.Value
 				}
 			}
 		}
