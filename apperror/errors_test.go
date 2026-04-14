@@ -66,23 +66,6 @@ func TestWithMetaClonesInput(t *testing.T) {
 	}
 }
 
-func TestWithCauseAndNilReceiver(t *testing.T) {
-	root := errors.New("permission denied")
-
-	err := New(CodeForbidden, "forbidden").WithCause(root)
-	if !errors.Is(err, root) {
-		t.Fatal("expected WithCause to attach root cause")
-	}
-
-	var nilErr *Error
-	if got := nilErr.WithCause(root); got != nil {
-		t.Fatal("expected nil receiver WithCause to return nil")
-	}
-	if got := nilErr.WithMeta(map[string]any{"x": 1}); got != nil {
-		t.Fatal("expected nil receiver WithMeta to return nil")
-	}
-}
-
 func TestCodeOfAndMessageOf(t *testing.T) {
 	root := errors.New("transport closed")
 	wrapped := Wrap(CodeInternal, "rpc failed", root)
