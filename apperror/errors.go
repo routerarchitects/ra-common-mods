@@ -85,15 +85,6 @@ func (e *Error) WithMeta(meta map[string]any) *Error {
 	return e
 }
 
-// WithCause attaches a cause to the error.
-func (e *Error) WithCause(cause error) *Error {
-	if e == nil {
-		return nil
-	}
-	e.Cause = cause
-	return e
-}
-
 func captureFrame(skip int) *Frame {
 	pc, file, line, ok := runtime.Caller(skip + 1)
 	if !ok {
@@ -177,7 +168,6 @@ func errorTreeMap(err error, depth int) map[string]any {
 	} else {
 		out["code"] = string(CodeUnknown)
 		out["message"] = err.Error()
-		out["type"] = fmt.Sprintf("%T", err)
 	}
 
 	if depth >= maxErrorTreeDepth {
