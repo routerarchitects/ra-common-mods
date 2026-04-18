@@ -18,7 +18,7 @@ func TestErrorStringAndUnwrap(t *testing.T) {
 	root := errors.New("db timeout")
 	err := Wrap(CodeInternal, "query failed", root)
 
-	if got := err.Error(); got != "[INTERNAL_SERVER] query failed: db timeout" {
+	if got := err.Error(); got != "[INTERNAL] query failed: db timeout" {
 		t.Fatalf("unexpected error string: %q", got)
 	}
 	if !errors.Is(err, root) {
@@ -28,41 +28,58 @@ func TestErrorStringAndUnwrap(t *testing.T) {
 
 func TestNewAndWrapFrames(t *testing.T) {
 	e1 := New(CodeConflict, "already exists")
-	if e1.Frame == nil {
+	if e1.Frame() == nil {
 		t.Fatal("expected New to capture frame")
 	}
-	if e1.Frame.File != "errors_test.go" {
-		t.Fatalf("expected New frame file to be errors_test.go, got %q", e1.Frame.File)
+	if e1.Frame().File != "errors_test.go" {
+		t.Fatalf("expected New frame file to be errors_test.go, got %q", e1.Frame().File)
 	}
-	if !strings.Contains(e1.Frame.Function, "TestNewAndWrapFrames") {
-		t.Fatalf("expected New frame function to contain test name, got %q", e1.Frame.Function)
+	if !strings.Contains(e1.Frame().Function, "TestNewAndWrapFrames") {
+		t.Fatalf("expected New frame function to contain test name, got %q", e1.Frame().Function)
 	}
 
 	root := errors.New("missing id")
 	e2 := Wrap(CodeInvalidInput, "invalid request", root)
-	if e2.Frame == nil {
+	if e2.Frame() == nil {
 		t.Fatal("expected Wrap to capture caller frame")
 	}
-	if e2.Frame.File != "errors_test.go" {
-		t.Fatalf("expected Wrap frame file to be errors_test.go, got %q", e2.Frame.File)
+	if e2.Frame().File != "errors_test.go" {
+		t.Fatalf("expected Wrap frame file to be errors_test.go, got %q", e2.Frame().File)
 	}
-	if !strings.Contains(e2.Frame.Function, "TestNewAndWrapFrames") {
-		t.Fatalf("expected Wrap frame function to contain test name, got %q", e2.Frame.Function)
+	if !strings.Contains(e2.Frame().Function, "TestNewAndWrapFrames") {
+		t.Fatalf("expected Wrap frame function to contain test name, got %q", e2.Frame().Function)
 	}
 }
 
-func TestWithMetaClonesInput(t *testing.T) {
+func TestWrapWithMetaClonesInput(t *testing.T) {
 	meta := map[string]any{"field": "id", "count": 1}
-	err := New(CodeInvalidInput, "bad request").WithMeta(meta)
+	err := WrapWithMeta(CodeInvalidInput, "bad request", nil, meta)
 
 	meta["field"] = "name"
 	meta["new"] = "value"
 
-	if got := err.Meta["field"]; got != "id" {
+	errMeta := err.Meta()
+	if got := errMeta["field"]; got != "id" {
 		t.Fatalf("expected cloned meta field to stay id, got %v", got)
 	}
-	if _, ok := err.Meta["new"]; ok {
+	if _, ok := errMeta["new"]; ok {
 		t.Fatal("expected cloned meta to not include later map mutations")
+	}
+}
+
+func TestMetaGetterReturnsCopy(t *testing.T) {
+	err := WrapWithMeta(CodeInvalidInput, "bad request", nil, map[string]any{"field": "a"})
+
+	meta := err.Meta()
+	meta["field"] = "changed"
+	meta["new"] = "value"
+
+	refetched := err.Meta()
+	if refetched["field"] != "a" {
+		t.Fatalf("expected internal meta field to stay a, got %v", refetched["field"])
+	}
+	if _, ok := refetched["new"]; ok {
+		t.Fatal("expected internal meta to not include caller-added key")
 	}
 }
 
@@ -90,7 +107,7 @@ func TestCodeOfAndMessageOf(t *testing.T) {
 
 func TestLogValueAndSlogAttrs(t *testing.T) {
 	root := errors.New("id is empty")
-	err := Wrap(CodeInvalidInput, "validation failed", root).WithMeta(map[string]any{"field": "id"})
+	err := WrapWithMeta(CodeInvalidInput, "validation failed", root, map[string]any{"field": "id"})
 
 	logMap, ok := err.LogValue().Any().(map[string]any)
 	if !ok {
@@ -119,8 +136,8 @@ func TestLogValueAndSlogAttrs(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected cause map, got %T", causes[0])
 	}
-	if cause["code"] != string(CodeUnknown) {
-		t.Fatalf("expected unknown code for plain cause, got %v", cause["code"])
+	if _, ok := cause["code"]; ok {
+		t.Fatalf("expected no code for plain cause, got %v", cause["code"])
 	}
 
 	attrs := SlogAttrs(err)
@@ -129,6 +146,25 @@ func TestLogValueAndSlogAttrs(t *testing.T) {
 	}
 	if got := SlogAttrs(nil); got != nil {
 		t.Fatalf("expected nil attrs for nil error, got %#v", got)
+	}
+}
+
+func TestFrameGetterReturnsCopy(t *testing.T) {
+	err := New(CodeInternal, "boom")
+
+	frame := err.Frame()
+	if frame == nil {
+		t.Fatal("expected frame")
+	}
+	origFile := frame.File
+	frame.File = "mutated.go"
+
+	refetched := err.Frame()
+	if refetched == nil {
+		t.Fatal("expected refetched frame")
+	}
+	if refetched.File != origFile {
+		t.Fatalf("expected frame file to remain %q, got %q", origFile, refetched.File)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 func main() {
 	rootCause := errors.New("id is empty")
 
-	err := apperror.Wrap(apperror.CodeInvalidInput, "request validation failed", rootCause).WithMeta(map[string]any{
+	err := apperror.WrapWithMeta(apperror.CodeInvalidInput, "request validation failed", rootCause, map[string]any{
 		"id": "test_id",
 	})
 

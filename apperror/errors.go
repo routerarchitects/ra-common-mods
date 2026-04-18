@@ -17,7 +17,7 @@ const (
 	CodeUnauthorized   Code = "UNAUTHORIZED"
 	CodeForbidden      Code = "FORBIDDEN"
 	CodeConflict       Code = "CONFLICT"
-	CodeInternal       Code = "INTERNAL_SERVER"
+	CodeInternal       Code = "INTERNAL"
 	CodeNotImplemented Code = "NOT_IMPLEMENTED"
 	CodeUnknown        Code = "UNKNOWN"
 )
@@ -31,11 +31,11 @@ type Frame struct {
 
 // Error defines the semantic application error.
 type Error struct {
-	Code    Code           `json:"code"`
-	Message string         `json:"message"`
-	Cause   error          `json:"-"`
-	Meta    map[string]any `json:"meta,omitempty"`
-	Frame   *Frame         `json:"frame,omitempty"`
+	code    Code
+	message string
+	cause   error
+	meta    map[string]any
+	frame   *Frame
 }
 
 // Error implements the error interface.
@@ -43,10 +43,10 @@ func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
-	if e.Cause != nil {
-		return fmt.Sprintf("[%s] %s: %v", e.Code, e.Message, e.Cause)
+	if e.cause != nil {
+		return fmt.Sprintf("[%s] %s: %v", e.code, e.message, e.cause)
 	}
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	return fmt.Sprintf("[%s] %s", e.code, e.message)
 }
 
 // Unwrap allows errors.Is / errors.As to work.
@@ -54,35 +54,78 @@ func (e *Error) Unwrap() error {
 	if e == nil {
 		return nil
 	}
-	return e.Cause
+	return e.cause
+}
+
+// Code returns the application error code.
+func (e *Error) Code() Code {
+	if e == nil {
+		return CodeUnknown
+	}
+	return e.code
+}
+
+// Message returns the user-facing error message.
+func (e *Error) Message() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
+// Cause returns the wrapped cause error, if any.
+func (e *Error) Cause() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// Meta returns a copy of metadata to prevent external mutation.
+func (e *Error) Meta() map[string]any {
+	if e == nil {
+		return nil
+	}
+	return cloneMeta(e.meta)
+}
+
+// Frame returns a copy of frame information.
+func (e *Error) Frame() *Frame {
+	if e == nil || e.frame == nil {
+		return nil
+	}
+	out := *e.frame
+	return &out
 }
 
 // New creates a new application error.
 func New(code Code, message string) *Error {
 	return &Error{
-		Code:    code,
-		Message: message,
-		Frame:   captureFrame(1),
+		code:    code,
+		message: message,
+		frame:   captureFrame(1),
 	}
 }
 
 // Wrap creates a new application error with a cause.
 func Wrap(code Code, message string, cause error) *Error {
 	return &Error{
-		Code:    code,
-		Message: message,
-		Cause:   cause,
-		Frame:   captureFrame(1),
+		code:    code,
+		message: message,
+		cause:   cause,
+		frame:   captureFrame(1),
 	}
 }
 
-// WithMeta attaches metadata to the error.
-func (e *Error) WithMeta(meta map[string]any) *Error {
-	if e == nil {
-		return nil
+// WrapWithMeta creates a new application error with a cause and metadata.
+func WrapWithMeta(code Code, message string, cause error, meta map[string]any) *Error {
+	return &Error{
+		code:    code,
+		message: message,
+		cause:   cause,
+		meta:    cloneMeta(meta),
+		frame:   captureFrame(1),
 	}
-	e.Meta = cloneMeta(meta)
-	return e
 }
 
 func captureFrame(skip int) *Frame {
@@ -108,7 +151,7 @@ func captureFrame(skip int) *Frame {
 func CodeOf(err error) Code {
 	var appErr *Error
 	if errors.As(err, &appErr) && appErr != nil {
-		return appErr.Code
+		return appErr.code
 	}
 	return CodeUnknown
 }
@@ -117,7 +160,7 @@ func CodeOf(err error) Code {
 func MessageOf(err error) string {
 	var appErr *Error
 	if errors.As(err, &appErr) && appErr != nil {
-		return appErr.Message
+		return appErr.message
 	}
 	if err != nil {
 		return err.Error()
@@ -151,22 +194,21 @@ func errorTreeMap(err error, depth int) map[string]any {
 	out := map[string]any{}
 
 	if appErr, ok := err.(*Error); ok && appErr != nil {
-		out["code"] = string(appErr.Code)
-		out["message"] = appErr.Message
+		out["code"] = string(appErr.code)
+		out["message"] = appErr.message
 
-		if appErr.Frame != nil {
+		if appErr.frame != nil {
 			out["frame"] = map[string]any{
-				"file":     appErr.Frame.File,
-				"line":     appErr.Frame.Line,
-				"function": appErr.Frame.Function,
+				"file":     appErr.frame.File,
+				"line":     appErr.frame.Line,
+				"function": appErr.frame.Function,
 			}
 		}
 
-		if len(appErr.Meta) > 0 {
-			out["meta"] = appErr.Meta
+		if len(appErr.meta) > 0 {
+			out["meta"] = cloneMeta(appErr.meta)
 		}
 	} else {
-		out["code"] = string(CodeUnknown)
 		out["message"] = err.Error()
 	}
 
