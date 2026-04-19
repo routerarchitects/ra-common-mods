@@ -18,6 +18,7 @@ const (
 	CodeForbidden      Code = "FORBIDDEN"
 	CodeConflict       Code = "CONFLICT"
 	CodeInternal       Code = "INTERNAL"
+	CodeTimeout        Code = "TIMEOUT"
 	CodeNotImplemented Code = "NOT_IMPLEMENTED"
 	CodeUnknown        Code = "UNKNOWN"
 )
