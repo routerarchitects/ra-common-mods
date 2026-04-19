@@ -28,6 +28,7 @@ Available code constants:
 - `CodeForbidden`
 - `CodeConflict`
 - `CodeInternal`
+- `CodeTimeout`
 - `CodeNotImplemented`
 - `CodeUnknown`
 

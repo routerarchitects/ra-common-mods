@@ -84,6 +84,17 @@ func TestMetaGetterReturnsCopy(t *testing.T) {
 }
 
 func TestCodeOfAndMessageOf(t *testing.T) {
+	timeoutErr := New(CodeTimeout, "request timed out")
+	if got := timeoutErr.Code(); got != CodeTimeout {
+		t.Fatalf("expected timeout code %s, got %s", CodeTimeout, got)
+	}
+	if got := CodeOf(timeoutErr); got != CodeTimeout {
+		t.Fatalf("expected CodeOf(timeoutErr) to be %s, got %s", CodeTimeout, got)
+	}
+	if got := timeoutErr.Error(); got != "[TIMEOUT] request timed out" {
+		t.Fatalf("unexpected timeout error string: %q", got)
+	}
+
 	root := errors.New("transport closed")
 	wrapped := Wrap(CodeInternal, "rpc failed", root)
 
