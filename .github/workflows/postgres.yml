@@ -1,0 +1,63 @@
+name: PostgreSQL Module CI
+
+on:
+  push:
+    paths:
+      - 'postgres/**'
+      - '.github/workflows/postgres.yml'
+  pull_request:
+    paths:
+      - 'postgres/**'
+      - '.github/workflows/postgres.yml'
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: postgres/go.sum
+
+      - name: Verify Formatting (gofmt)
+        run: |
+          cd postgres
+          DIFF=$(gofmt -l .)
+          if [ -n "$DIFF" ]; then
+            echo "Files require formatting:"
+            echo "$DIFF"
+            exit 1
+          fi
+
+      - name: Run Go Vet
+        run: |
+          cd postgres
+          go vet ./...
+
+      - name: Run Tests (Unit & Database Integration) with Race Detector
+        env:
+          TEST_POSTGRES_DSN: "postgres://postgres:postgrespassword@localhost:5432/testdb?sslmode=disable"
+        run: |
+          cd postgres
+          go test -count=1 -v -race ./...
