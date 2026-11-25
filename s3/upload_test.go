@@ -1,12 +1,16 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,6 +56,130 @@ func TestUploadPreservesStreamingValidationErrors(t *testing.T) {
 type failedUploadReader struct{ err error }
 
 func (r failedUploadReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestUploadReadsFromCurrentPosition(t *testing.T) {
+	const partSize = 5 << 20
+	payload := make([]byte, partSize+64)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	filePath := filepath.Join(t.TempDir(), "object")
+	if err := os.WriteFile(filePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"bytes", "file"} {
+		for _, tc := range []struct {
+			name          string
+			start         int64
+			size          int64
+			omitSeek      bool
+			wantMultipart bool
+		}{
+			{name: "positioned single put", start: 11, size: 37},
+			{name: "positioned multipart", start: 11, size: partSize + 17, wantMultipart: true},
+			{name: "zero-offset multipart", size: partSize + 17, wantMultipart: true},
+			{name: "reader-at without seek", start: 11, size: partSize + 17, omitSeek: true, wantMultipart: true},
+			{name: "unknown size", start: 11, size: -1, wantMultipart: true},
+		} {
+			t.Run(source+"/"+tc.name, func(t *testing.T) {
+				var reader interface {
+					io.ReaderAt
+					io.ReadSeeker
+				} = bytes.NewReader(payload)
+				if source == "file" {
+					file, err := os.Open(filePath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = file.Close() })
+					reader = file
+				}
+				if _, err := reader.Seek(tc.start, io.SeekStart); err != nil {
+					t.Fatal(err)
+				}
+				var input io.Reader = reader
+				if tc.omitSeek {
+					input = struct {
+						io.Reader
+						io.ReaderAt
+					}{reader, reader}
+				}
+
+				var uploaded bytes.Buffer
+				var multipart bool
+				client := newProtocolTestClient(t, Config{}, handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+					query := r.URL.Query()
+					switch {
+					case r.Method == http.MethodPost && query.Has("uploads"):
+						multipart = true
+						_, _ = io.WriteString(w, "<InitiateMultipartUploadResult><UploadId>upload-id</UploadId></InitiateMultipartUploadResult>")
+					case r.Method == http.MethodPut:
+						if _, err := io.Copy(&uploaded, r.Body); err != nil {
+							t.Errorf("read upload request: %v", err)
+						}
+						w.Header().Set("ETag", `"etag"`)
+					case r.Method == http.MethodPost && query.Get("uploadId") == "upload-id":
+						_, _ = io.WriteString(w, "<CompleteMultipartUploadResult><Bucket>test-bucket</Bucket><Key>object</Key><ETag>complete</ETag></CompleteMultipartUploadResult>")
+					default:
+						t.Errorf("unexpected upload request %s %s", r.Method, r.URL)
+						w.WriteHeader(http.StatusBadRequest)
+					}
+				}))
+				if err := client.Upload(t.Context(), "test-bucket", "object", input, tc.size, "application/octet-stream"); err != nil {
+					t.Fatal(err)
+				}
+				end := int64(len(payload))
+				if tc.size >= 0 {
+					end = tc.start + tc.size
+				}
+				if multipart != tc.wantMultipart || !bytes.Equal(uploaded.Bytes(), payload[tc.start:end]) {
+					t.Fatalf("unexpected bytes from offset %d, multipart=%v, size=%d", tc.start, multipart, uploaded.Len())
+				}
+				wantPosition := tc.start
+				if tc.size < 0 || tc.omitSeek {
+					wantPosition = end
+				}
+				if position, err := reader.Seek(0, io.SeekCurrent); position != wantPosition || err != nil {
+					t.Fatalf("reader position = %d, error=%v, want %d", position, err, wantPosition)
+				}
+			})
+		}
+	}
+}
+
+type fixedUploadPosition struct {
+	*bytes.Reader
+	position int64
+	err      error
+}
+
+func (r fixedUploadPosition) Seek(int64, int) (int64, error) { return r.position, r.err }
+
+func TestUploadRejectsInvalidReaderRangeBeforeRequests(t *testing.T) {
+	client := newProtocolTestClient(t, Config{}, handlerTransport(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("invalid reader reached the backend: %s %s", r.Method, r.URL)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	seekErr := errors.New("seek failed")
+	for _, tc := range []struct {
+		position int64
+		cause    error
+	}{
+		{cause: seekErr},
+		{position: -1},
+		{position: math.MaxInt64},
+	} {
+		reader := fixedUploadPosition{bytes.NewReader([]byte("abc")), tc.position, tc.cause}
+		err := client.Upload(t.Context(), "test-bucket", "object", reader, 3, "application/octet-stream")
+		if tc.cause != nil {
+			if !errors.Is(err, tc.cause) {
+				t.Errorf("seek error was lost: %v", err)
+			}
+		} else if apperror.CodeOf(err) != apperror.CodeInvalidInput {
+			t.Errorf("position %d returned %v, want invalid input", tc.position, err)
+		}
+	}
+}
 
 func TestMultipartUploadStreamsConfiguredParts(t *testing.T) {
 	const partSize = 6 << 20

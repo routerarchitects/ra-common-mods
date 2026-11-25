@@ -135,7 +135,7 @@ func TestStatObjectReturnsMetadata(t *testing.T) {
 		w.Header().Add("X-Amz-Meta-Team", "storage")
 		w.Header().Add("X-Amz-Meta-Team", "operations")
 	}))
-	info, err := client.StatObject(t.Context(), " Test-Bucket ", "dir/object")
+	info, err := client.StatObject(t.Context(), "test-bucket", "dir/object")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -20,11 +21,6 @@ type Client struct {
 	minioClient *minio.Client
 	partSize    uint64
 	uploadSlots chan struct{}
-}
-
-// normalizeBucket standardizes bucket names (lowercase, whitespace trimmed).
-func normalizeBucket(bucket string) string {
-	return strings.ToLower(strings.TrimSpace(bucket))
 }
 
 // NewClient creates an S3 client without contacting the storage endpoint.
@@ -85,7 +81,7 @@ func validateBucket(bucket string) error {
 	if bucket == "" {
 		return apperror.New(apperror.CodeInvalidInput, "bucket name must not be empty")
 	}
-	if err := s3utils.CheckValidBucketName(bucket); err != nil {
+	if err := s3utils.CheckValidBucketNameStrict(bucket); err != nil {
 		return apperror.Wrap(apperror.CodeInvalidInput, "invalid bucket name", err)
 	}
 	return nil
@@ -117,9 +113,9 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.Reader.Read(p)
 }
 
-// Upload streams an object into the specified bucket. Use -1 for an unknown size.
+// Upload streams from the reader's current position. Use -1 for an unknown size.
+// Known-size readers with ReadAt and Seek keep their original position.
 func (c *Client) Upload(ctx context.Context, bucket string, objectName string, reader io.Reader, objectSize int64, contentType string) error {
-	bucket = normalizeBucket(bucket)
 	if err := validateObject(bucket, objectName); err != nil {
 		return err
 	}
@@ -138,10 +134,23 @@ func (c *Client) Upload(ctx context.Context, bucket string, objectName string, r
 		return wrapS3Error("starting S3 upload", err)
 	}
 
-	// Keep the SDK's seek and random-access upload paths for known-size readers.
-	_, seekable := reader.(io.Seeker)
-	_, randomAccess := reader.(io.ReaderAt)
-	if objectSize < 0 || (!seekable && !randomAccess) {
+	if source, ok := reader.(interface {
+		io.ReaderAt
+		io.Seeker
+	}); ok && objectSize >= 0 {
+		offset, err := source.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return wrapS3Error("failed to determine upload reader position", err)
+		}
+		if offset < 0 || objectSize > math.MaxInt64-offset {
+			return apperror.New(apperror.CodeInvalidInput, "upload reader range is invalid")
+		}
+		// MinIO's multipart offsets are relative to the section's start.
+		reader = io.NewSectionReader(source, offset, objectSize)
+	} else {
+		if objectSize >= 0 {
+			reader = io.LimitReader(reader, objectSize)
+		}
 		reader = contextReader{ctx, reader}
 	}
 	opts := minio.PutObjectOptions{
@@ -157,18 +166,20 @@ func (c *Client) Upload(ctx context.Context, bucket string, objectName string, r
 	return nil
 }
 
-// Download checks object metadata before returning a caller-owned stream.
+// Download starts an object GET and returns a caller-owned response stream.
 func (c *Client) Download(ctx context.Context, bucket string, objectName string) (io.ReadCloser, error) {
-	bucket = normalizeBucket(bucket)
-	if _, _, err := c.statObject(ctx, bucket, objectName); err != nil {
+	if err := validateObject(bucket, objectName); err != nil {
 		return nil, err
 	}
 
-	object, err := c.minioClient.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+	getCtx, response := observeResponse(ctx, http.MethodGet)
+	core := minio.Core{Client: c.minioClient}
+	stream, _, _, err := core.GetObject(getCtx, bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, wrapS3Error(fmt.Sprintf("failed to get object %q from bucket %q", objectName, bucket), err)
+		_, err = c.objectFailure(ctx, bucket, objectName, response, err, fmt.Sprintf("failed to download object %q from bucket %q", objectName, bucket))
+		return nil, err
 	}
-	return downloadStream{object}, nil
+	return downloadStream{stream}, nil
 }
 
 type downloadStream struct {
@@ -192,7 +203,6 @@ func (s downloadStream) Close() error {
 
 // Delete removes an object. A confirmed missing object counts as a successful deletion.
 func (c *Client) Delete(ctx context.Context, bucket string, objectName string) error {
-	bucket = normalizeBucket(bucket)
 	if err := validateObject(bucket, objectName); err != nil {
 		return err
 	}
@@ -232,7 +242,6 @@ func (c *Client) StatObject(ctx context.Context, bucket string, objectName strin
 }
 
 func (c *Client) statObject(ctx context.Context, bucket string, objectName string) (minio.ObjectInfo, bool, error) {
-	bucket = normalizeBucket(bucket)
 	if err := validateObject(bucket, objectName); err != nil {
 		return minio.ObjectInfo{}, false, err
 	}
@@ -248,7 +257,6 @@ func (c *Client) statObject(ctx context.Context, bucket string, objectName strin
 
 // BucketExists checks if the specified bucket exists and is accessible.
 func (c *Client) BucketExists(ctx context.Context, bucket string) (bool, error) {
-	bucket = normalizeBucket(bucket)
 	if err := validateBucket(bucket); err != nil {
 		return false, err
 	}
@@ -262,7 +270,6 @@ func (c *Client) BucketExists(ctx context.Context, bucket string) (bool, error) 
 
 // MakeBucket creates a new bucket in the S3 storage.
 func (c *Client) MakeBucket(ctx context.Context, bucket string) error {
-	bucket = normalizeBucket(bucket)
 	if err := validateBucket(bucket); err != nil {
 		return err
 	}
@@ -276,7 +283,6 @@ func (c *Client) MakeBucket(ctx context.Context, bucket string) error {
 
 // RemoveBucket deletes a bucket from S3 storage.
 func (c *Client) RemoveBucket(ctx context.Context, bucket string) error {
-	bucket = normalizeBucket(bucket)
 	if err := validateBucket(bucket); err != nil {
 		return err
 	}
@@ -315,7 +321,6 @@ func summarizeObject(object minio.ObjectInfo) ObjectSummary {
 // ListObjects yields summaries matching prefix and stops after the first error
 // or when the caller stops iterating.
 func (c *Client) ListObjects(ctx context.Context, bucket string, prefix string) iter.Seq2[ObjectSummary, error] {
-	bucket = normalizeBucket(bucket)
 	return func(yield func(ObjectSummary, error) bool) {
 		if err := validateBucket(bucket); err != nil {
 			yield(ObjectSummary{}, err)
@@ -355,7 +360,6 @@ func listError(bucket string, err error) error {
 // for that specific bucket without requiring account-wide s3:ListAllMyBuckets permissions.
 // If bucket is empty, it evaluates general cluster reachability.
 func (c *Client) Ping(ctx context.Context, bucket string) error {
-	bucket = normalizeBucket(bucket)
 	if bucket != "" {
 		exists, err := c.BucketExists(ctx, bucket)
 		if err != nil {

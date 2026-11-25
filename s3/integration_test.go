@@ -77,16 +77,27 @@ func TestS3Client_LiveIntegration(t *testing.T) {
 		t.Fatalf("ping test bucket: %v", err)
 	}
 
-	// A generated, non-seekable stream exceeds one multipart part. Exercise
-	// both known-length and unknown-length upload paths with the same payload.
+	// Exercise sequential and positioned multipart uploads with the same payload.
 	const size = (12 << 20) + 37
 	hash := sha256.New()
 	if _, err := io.Copy(hash, io.LimitReader(repeatingReader{}, size)); err != nil {
 		t.Fatal(err)
 	}
-	for _, length := range []int64{size, -1} {
-		if err := bound.Upload(ctx, object, io.LimitReader(repeatingReader{}, size), length, "application/octet-stream"); err != nil {
-			t.Fatalf("upload stream (size %d): %v", length, err)
+	positioned := strings.NewReader("skip" + strings.Repeat("x", size))
+	if _, err := positioned.Seek(4, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	for _, upload := range []struct {
+		name   string
+		reader io.Reader
+		size   int64
+	}{
+		{"known length", io.LimitReader(repeatingReader{}, size), size},
+		{"unknown length", io.LimitReader(repeatingReader{}, size), -1},
+		{"positioned", positioned, size},
+	} {
+		if err := bound.Upload(ctx, object, upload.reader, upload.size, "application/octet-stream"); err != nil {
+			t.Fatalf("upload %s stream: %v", upload.name, err)
 		}
 		stream, err := bound.Download(ctx, object)
 		if err != nil {
@@ -96,8 +107,11 @@ func TestS3Client_LiveIntegration(t *testing.T) {
 		n, readErr := io.Copy(digest, stream)
 		closeErr := stream.Close()
 		if readErr != nil || closeErr != nil || n != size || !bytes.Equal(digest.Sum(nil), hash.Sum(nil)) {
-			t.Fatalf("multipart round trip read %d bytes, read error %v, close error %v", n, readErr, closeErr)
+			t.Fatalf("%s multipart round trip read %d bytes, read error %v, close error %v", upload.name, n, readErr, closeErr)
 		}
+	}
+	if position, err := positioned.Seek(0, io.SeekCurrent); position != 4 || err != nil {
+		t.Fatalf("positioned reader offset = %d, error=%v, want 4", position, err)
 	}
 
 	if err := bound.Upload(ctx, spaced, strings.NewReader("payload"), 7, "text/plain"); err != nil {

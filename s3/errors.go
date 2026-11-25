@@ -128,7 +128,8 @@ func (t responseTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return resp, err
 	}
-	if o, ok := req.Context().Value(responseContextKey{}).(*responseObservation); ok && o.method == req.Method {
+	if o, ok := req.Context().Value(responseContextKey{}).(*responseObservation); ok &&
+		o.method == req.Method && (req.Method != http.MethodGet || !req.URL.Query().Has("location")) {
 		o.headerCode = resp.Header.Get("X-Minio-Error-Code")
 	}
 	if v, ok := req.Context().Value(listingVerificationKey{}).(*listingVerification); ok &&

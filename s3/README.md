@@ -69,6 +69,8 @@ func CopyObject(ctx context.Context, src io.Reader, dst io.Writer) error {
 
 The client also exposes bucket-aware `Upload`, `Download`, `Delete`, `Exists`, `ListObjects`, `StatObject`, `BucketExists`, `MakeBucket`, `RemoveBucket`, `Ping` and `Endpoint`. The bucket-scoped adapter accepts any non-nil implementation of `storage.Storage` and validates the supplied S3 bucket name locally. Call `Ping` on the adapter to check whether the bucket exists and is accessible.
 
+Both APIs require a valid S3 bucket name and pass it to the backend exactly as supplied. Invalid names, including names with uppercase letters or surrounding whitespace, return `apperror.CodeInvalidInput`. A literal empty string in `client.Ping(ctx, "")` selects the cluster-level check.
+
 ### Listing and metadata
 
 `ListObjects` returns an `iter.Seq2[ObjectSummary, error]` over the SDK's paginated listing. Each summary contains the key, size, last modification time and ETag. The iterator yields a terminal error on failure. A `break` stops the listing without fetching another page. Use `StatObject` when you need the content type or detailed response metadata. `ObjectInfo.Metadata` is an `http.Header` and preserves metadata values such as `X-Amz-Meta-*`.
@@ -91,11 +93,14 @@ for summary, err := range archive.ListObjects(ctx, "daily/") {
 
 ### Upload buffering
 
-Uploads take an `io.Reader`. Pass the known byte length when available or `-1` for an unknown length. Streaming multipart uploads use one SDK thread per object and read one part at a time. Each client checks that the active upload limit multiplied by the part size fits its configured part-buffer budget. The SDK also enforces its multipart part-count limit. Uploads waiting for a slot and network requests honor context cancellation. A caller-supplied reader that blocks inside `Read` must support cancellation itself. The caller closes the download stream.
+Uploads start at the reader's current position. Pass the byte length to upload when available or `-1` for an unknown length. A known-size reader that implements both `io.ReaderAt` and `io.Seeker` keeps its original cursor. Other inputs are consumed sequentially.
+
+Streaming multipart uploads use one SDK thread per object and read one part at a time. Each client checks that the active upload limit multiplied by the part size fits its configured part-buffer budget. The SDK also enforces its multipart part-count limit. Uploads waiting for a slot and network requests honor context cancellation. A caller-supplied reader that blocks inside a read must support cancellation itself.
 
 ### Missing objects and errors
 
 - `Delete` succeeds when the backend reports success or confirms the object is absent. `Exists` returns `false, nil` for confirmed absence.
+- `Download` classifies errors from the object GET before returning a stream. The caller closes the stream and handles any subsequent read error.
 - Uncoded 404s and generic `NotFound` or `ResourceNotFound` responses trigger a listing with the requested key as the prefix. The exact key must be absent from the complete listing. Similar keys do not match. Verification requires permission to list the requested prefix.
 - An exact match, failed listing, or inconsistent listing produces an error. If a listing page supplies `KeyCount`, the count must match the returned entries. An explicit missing-bucket response returns `apperror.CodeNotFound`. Authorization and infrastructure errors retain their underlying causes.
 - Application errors from upload readers retain their original code, metadata, and error chain.
