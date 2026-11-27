@@ -26,20 +26,18 @@ type Event struct {
 }
 
 type Config struct {
-	Log   logger.Config `json:"log"`
-	Kafka kafka.Config  `json:"kafka"`
+	Log      logger.Config        `json:"log"`
+	Broker   kafka.BrokerConfig   `json:"broker"`
+	Producer kafka.ProducerConfig `json:"producer" envPrefix:"KAFKA_PRODUCER_"`
+	Consumer kafka.ConsumerConfig `json:"consumer" envPrefix:"KAFKA_CONSUMER_"`
 }
 
 func main() {
-	// data, err := os.ReadFile("config.json")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// Setup logger
+	os.Exit(run())
+}
+
+func run() int {
 	var appCfg Config
-	// if err := json.Unmarshal(data, &appCfg); err != nil {
-	// 	panic(err)
-	// }
 	if err := env.Parse(&appCfg); err != nil {
 		panic(err)
 	}
@@ -52,56 +50,181 @@ func main() {
 
 	aLog.Info("Logger Initiated")
 
-	// Create context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// Handle graceful shutdown
-	sigterm := make(chan os.Signal, 1)
-	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
-
-	// Configuration
-	cfg := appCfg.Kafka
-	if len(cfg.Brokers) == 0 {
-		cfg.Brokers = []string{"localhost:9092"}
+	brokerCfg := appCfg.Broker
+	if len(brokerCfg.Brokers) == 0 {
+		brokerCfg.Brokers = []string{"localhost:9092"}
 	}
-	cfg.ClientID = "kafka-example"
-	cfg.Consumer.GroupID = "example-consumer-group"
+	brokerCfg.ClientID = "kafka-example"
+
+	producerCfg := appCfg.Producer
+	consumerCfg := appCfg.Consumer
+	consumerCfg.GroupID = "example-consumer-group"
 
 	topic := "example-topic"
 
-	// Start producer in background
-	go runProducer(ctx, cfg, topic, aLog)
-
-	// Wait a bit for producer to start
-	time.Sleep(2 * time.Second)
-
-	// Start consumer
-	go runConsumer(ctx, cfg, topic, aLog)
-
-	// Wait for termination signal
-	<-sigterm
-	aLog.Info("Shutting down gracefully...")
-	cancel()
-
-	// Give some time for cleanup
-	time.Sleep(2 * time.Second)
-	aLog.Info("Shutdown complete")
-}
-
-// runProducer creates a producer and spawns producer goroutines to publish messages.
-func runProducer(ctx context.Context, cfg kafka.Config, topic string, logger *slog.Logger) {
-	// Create producer
-	producer, err := kafka.NewProducer(cfg)
+	// Shared producer must outlive consumer goroutines so shutdown finishes cleanly.
+	producer, err := kafka.NewProducer(brokerCfg, producerCfg)
 	if err != nil {
-		logger.Error("Failed to create producer", "error", err)
-		return
+		aLog.Error("Failed to create producer", "error", err)
+		return 1
 	}
 	defer producer.Close()
 
+	consumer, err := kafka.NewConsumer(brokerCfg, consumerCfg, aLog)
+	if err != nil {
+		aLog.Error("Failed to create consumer", "error", err)
+		return 1
+	}
+	defer consumer.Close()
+
+	stats := &consumerStats{
+		processedByWorker: make(map[int]int),
+	}
+
+	handler := newMessageHandler(stats, aLog)
+	if err := consumer.Subscribe(kafka.Subscription{
+		Topic:   topic,
+		Handler: handler,
+		Interceptors: []kafka.Interceptor{
+			kafka.RecoveryInterceptor(aLog),
+		},
+		RetryPolicy: kafka.DefaultRetryPolicy(),
+	}); err != nil {
+		aLog.Error("Subscribe failed", "error", err)
+		return 1
+	}
+
+	var (
+		wg          sync.WaitGroup
+		consumerErr error
+	)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := consumer.Run(ctx); err != nil {
+			consumerErr = err
+			aLog.Error("Consumer exited with terminal error; shutting down", "error", err)
+			stop()
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reportStats(ctx, stats, aLog)
+	}()
+
+	if !waitForReady(ctx, consumer, 30*time.Second) {
+		timedOut := ctx.Err() == nil
+		stop()
+		wg.Wait()
+		if timedOut {
+			aLog.Error("Consumer did not become ready before timeout", "health", consumer.Health())
+		}
+		if timedOut || consumerErr != nil {
+			return 1
+		}
+		return 0
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runProducer(ctx, producer, topic, aLog)
+	}()
+
+	<-ctx.Done()
+	aLog.Info("Shutting down gracefully...")
+	wg.Wait()
+
+	stats.mu.Lock()
+	aLog.Info("Consumer stopped",
+		"total_processed", stats.total,
+		"by_worker", stats.processedByWorker,
+	)
+	stats.mu.Unlock()
+
+	if consumerErr != nil {
+		aLog.Error("Shutdown complete with consumer failure", "error", consumerErr)
+		return 1
+	}
+	aLog.Info("Shutdown complete")
+	return 0
+}
+
+func waitForReady(ctx context.Context, c kafka.Consumer, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if c.Health().Ready {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func newMessageHandler(stats *consumerStats, logger *slog.Logger) kafka.Handler {
+	return func(ctx context.Context, msg *kafka.Message) error {
+		var event Event
+		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			logger.Error("Failed to unmarshal event", "error", err)
+			return kafka.Permanent(err)
+		}
+
+		processingTime := time.Duration(50+event.Worker*10) * time.Millisecond
+		select {
+		case <-time.After(processingTime):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		stats.mu.Lock()
+		stats.total++
+		stats.processedByWorker[event.Worker]++
+		currentTotal := stats.total
+		stats.mu.Unlock()
+
+		if event.ID == "event-1-5" {
+			err := fmt.Errorf("simulated processing error for message index %s", event.ID)
+			logger.Error("Processing failed for message",
+				"event_id", event.ID,
+				"event_type", event.Type,
+				"producer_worker", event.Worker,
+				"processing_time", processingTime,
+				"total_processed", currentTotal,
+				"error", err,
+			)
+			return err
+		}
+
+		logger.Info("Processed message",
+			"event_id", event.ID,
+			"event_type", event.Type,
+			"producer_worker", event.Worker,
+			"processing_time", processingTime,
+			"total_processed", currentTotal,
+		)
+		return nil
+	}
+}
+
+// runProducer spawns producer goroutines to publish messages until completion or context cancellation.
+func runProducer(ctx context.Context, producer kafka.Producer, topic string, logger *slog.Logger) {
 	logger.Info("Producer started")
 
-	// Spawn producer goroutines.
 	var wg sync.WaitGroup
 	numProducers := 1
 
@@ -114,7 +237,6 @@ func runProducer(ctx context.Context, cfg kafka.Config, topic string, logger *sl
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 
-		workerLoop:
 			for {
 				select {
 				case <-ctx.Done():
@@ -130,9 +252,8 @@ func runProducer(ctx context.Context, cfg kafka.Config, topic string, logger *sl
 							"worker", workerID,
 							"messages_sent", messageCount,
 						)
-						break workerLoop
+						return
 					}
-					// Create event
 					event := Event{
 						ID:        fmt.Sprintf("event-%d-%d", workerID, messageCount),
 						Type:      "user.action",
@@ -141,9 +262,7 @@ func runProducer(ctx context.Context, cfg kafka.Config, topic string, logger *sl
 						Worker:    workerID,
 					}
 
-					// Publish as JSON
-					err := producer.PublishJSON(ctx, topic, event.ID, event)
-					if err != nil {
+					if err := producer.PublishJSON(ctx, topic, event.ID, event); err != nil {
 						logger.Error("Failed to publish message",
 							"worker", workerID,
 							"error", err,
@@ -161,102 +280,8 @@ func runProducer(ctx context.Context, cfg kafka.Config, topic string, logger *sl
 		}(i)
 	}
 
-	// Wait for all producers to finish
 	wg.Wait()
 	logger.Info("All producer workers stopped")
-}
-
-// runConsumer creates a consumer and processes messages.
-func runConsumer(ctx context.Context, cfg kafka.Config, topic string, logger *slog.Logger) {
-	// Create consumer
-	consumer, err := kafka.NewConsumer(cfg, logger)
-	if err != nil {
-		logger.Error("Failed to create consumer", "error", err)
-		return
-	}
-	defer consumer.Close()
-
-	logger.Info("Consumer started")
-
-	// Track statistics
-	stats := &consumerStats{
-		processedByWorker: make(map[int]int),
-	}
-
-	// Define message handler
-	handler := func(ctx context.Context, msg *kafka.Message) error {
-		// Decode the event
-		var event Event
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			logger.Error("Failed to unmarshal event",
-				"error", err,
-				"value", string(msg.Value),
-			)
-			return err
-		}
-
-		// Simulate processing time
-		processingTime := time.Duration(50+event.Worker*10) * time.Millisecond
-		time.Sleep(processingTime)
-
-		// Track stats
-		stats.mu.Lock()
-		stats.total++
-		stats.processedByWorker[event.Worker]++
-		currentTotal := stats.total
-		stats.mu.Unlock()
-
-		if event.ID == "event-1-5" {
-			// Simulate occasional processing failure
-			err := fmt.Errorf("simulated processing error for message index %s", event.ID)
-			logger.Error("Processing failed for message", "event_id", event.ID,
-				"event_type", event.Type,
-				"producer_worker", event.Worker,
-				"processing_time", processingTime,
-				"total_processed", currentTotal,
-				"error", err,
-			)
-			return err
-		} else {
-			logger.Info("Processed message",
-				"event_id", event.ID,
-				"event_type", event.Type,
-				"producer_worker", event.Worker,
-				"processing_time", processingTime,
-				"total_processed", currentTotal,
-			)
-		}
-
-		return nil
-	}
-
-	// Subscribe options
-	opts := &kafka.SubscribeOptions{
-		Interceptors: []kafka.Interceptor{
-			kafka.RecoveryInterceptor(logger),
-			kafka.MetricsInterceptor(),
-		},
-		RetryPolicy: &kafka.RetryPolicy{
-			Strategy: kafka.RetryStrategyLogAndIgnore,
-		},
-	}
-
-	// Start stats reporter
-	go reportStats(ctx, stats, logger)
-
-	// Subscribe (blocking until context is cancelled)
-	err = consumer.Subscribe(ctx, topic, handler, opts)
-	if err != nil && err != context.Canceled {
-		logger.Error("Consumer error", "error", err)
-	}
-
-	// Print final statistics
-	stats.mu.Lock()
-	logger.Info("Consumer stopped",
-		"total_processed", stats.total,
-		"by_worker", stats.processedByWorker,
-	)
-	stats.mu.Unlock()
 }
 
 // consumerStats tracks consumer statistics

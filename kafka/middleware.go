@@ -2,18 +2,23 @@ package kafka
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 )
 
-// LoggingInterceptor creates an interceptor that logs message processing.
+// LoggingInterceptor creates an interceptor that logs per-attempt message processing.
+// Successful attempts are logged at Debug level to avoid info-level flooding under high throughput.
+// Only bounded safe failure categories are logged; application error messages and caller logs
+// must avoid secrets or sensitive payloads.
 func LoggingInterceptor(logger *slog.Logger) Interceptor {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, msg *Message) error {
 			start := time.Now()
 
-			logger.Info("processing message",
+			logger.Debug("processing message",
 				"topic", msg.Topic,
 				"partition", msg.Partition,
 				"offset", msg.Offset,
@@ -23,19 +28,21 @@ func LoggingInterceptor(logger *slog.Logger) Interceptor {
 			duration := time.Since(start)
 
 			if err != nil {
-				logger.Error("message processing failed",
+				logger.Error("message processing attempt failed",
 					"topic", msg.Topic,
 					"partition", msg.Partition,
 					"offset", msg.Offset,
 					"duration", duration,
-					"error", err,
+					"outcome", "failure",
+					"failure_category", classifyFailureCategory(err),
 				)
 			} else {
-				logger.Info("message processed successfully",
+				logger.Debug("message attempt processed",
 					"topic", msg.Topic,
 					"partition", msg.Partition,
 					"offset", msg.Offset,
 					"duration", duration,
+					"outcome", "success",
 				)
 			}
 
@@ -44,62 +51,29 @@ func LoggingInterceptor(logger *slog.Logger) Interceptor {
 	}
 }
 
-// RecoveryInterceptor creates an interceptor that recovers from panics.
+// RecoveryInterceptor creates an interceptor that recovers from panics and converts them to errors.
+// Note that Consumer already provides built-in panic containment around handler/interceptor calls.
 func RecoveryInterceptor(logger *slog.Logger) Interceptor {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, msg *Message) (err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("panic recovered: %v", r)
+					panicErr := newHandlerPanicError(r).(*handlerPanicError)
+					err = panicErr
 					logger.Error("panic recovered",
 						"topic", msg.Topic,
 						"partition", msg.Partition,
 						"offset", msg.Offset,
-						"panic", r,
+						"failure_category", "handler_panic",
+						"panic_type", panicErr.typeName,
+						"panic_frames", panicErr.frames,
 					)
 				}
 			}()
 
-			return next(ctx, msg)
-		}
-	}
-}
-
-// MetricsInterceptor creates an interceptor that tracks metrics.
-// This is a simple example - in production you'd integrate with Prometheus.
-func MetricsInterceptor() Interceptor {
-	return func(next Handler) Handler {
-		return func(ctx context.Context, msg *Message) error {
-			start := time.Now()
-
-			err := next(ctx, msg)
-			duration := time.Since(start)
-
-			// TODO: Integrate with Prometheus metrics
-			// For now, we just track duration
-			_ = duration
-
-			// Example metrics you might track:
-			// - messagesProcessed.Inc()
-			// - messageProcessingDuration.Observe(duration.Seconds())
-			// - messagesFailedTotal.Inc() (if err != nil)
-
-			return err
-		}
-	}
-}
-
-// TracingInterceptor creates an interceptor that extracts/injects trace context.
-// This is a placeholder - in production you'd integrate with OpenTelemetry.
-func TracingInterceptor() Interceptor {
-	return func(next Handler) Handler {
-		return func(ctx context.Context, msg *Message) error {
-			// TODO: Integrate with OpenTelemetry
-			// Extract trace context from message headers
-			// span := tracer.Start(ctx, "kafka.consume")
-			// defer span.End()
-
-			// For now, we just pass through
 			return next(ctx, msg)
 		}
 	}

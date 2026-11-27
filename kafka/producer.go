@@ -2,140 +2,82 @@ package kafka
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
+	"sync"
+	"time"
 
 	"github.com/IBM/sarama"
 )
 
-// producer implements the Producer interface using Sarama.
-type producer struct {
-	syncProducer sarama.SyncProducer
-	config       Config
+// ErrProducerClosed is returned when publishing to a closed producer.
+var ErrProducerClosed = errors.New("kafka: producer is closed")
+
+type syncProducerClient interface {
+	SendMessage(msg *sarama.ProducerMessage) (partition int32, offset int64, err error)
+	Close() error
 }
 
-// NewProducer creates a new Kafka producer.
-func NewProducer(cfg Config) (Producer, error) {
-	if len(cfg.Brokers) == 0 {
-		return nil, fmt.Errorf("no brokers specified")
-	}
+type consumerGroupClient interface {
+	Consume(ctx context.Context, topics []string, handler sarama.ConsumerGroupHandler) error
+	Errors() <-chan error
+	Close() error
+}
 
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.ClientID = cfg.ClientID
-	saramaConfig.Producer.Return.Successes = true
-	saramaConfig.Producer.Return.Errors = true
+// producer implements the Producer interface using Sarama.
+type producer struct {
+	mu           sync.RWMutex
+	closed       bool
+	closeErr     error
+	syncProducer syncProducerClient
+	requiredAcks int16
+	metrics      *Metrics
+	tracing      *kafkaTracer
+}
 
-	// Set required acks
-	saramaConfig.Producer.RequiredAcks = sarama.RequiredAcks(cfg.Producer.RequiredAcks)
-
-	// Set compression
-	switch cfg.Producer.Compression {
-	case "gzip":
-		saramaConfig.Producer.Compression = sarama.CompressionGZIP
-	case "snappy":
-		saramaConfig.Producer.Compression = sarama.CompressionSnappy
-	case "lz4":
-		saramaConfig.Producer.Compression = sarama.CompressionLZ4
-	case "zstd":
-		saramaConfig.Producer.Compression = sarama.CompressionZSTD
-	default:
-		saramaConfig.Producer.Compression = sarama.CompressionNone
-	}
-
-	// Set idempotent
-	saramaConfig.Producer.Idempotent = cfg.Producer.Idempotent
-	if cfg.Producer.Idempotent {
-		// Idempotent producer requires these settings
-		saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
-		saramaConfig.Producer.Retry.Max = cfg.Producer.MaxRetries
-		saramaConfig.Net.MaxOpenRequests = 1
-	}
-
-	// Set max message bytes
-	if cfg.Producer.MaxMessageBytes > 0 {
-		saramaConfig.Producer.MaxMessageBytes = cfg.Producer.MaxMessageBytes
-	}
-
-	// Set timeout
-	if cfg.Producer.Timeout > 0 {
-		saramaConfig.Producer.Timeout = cfg.Producer.Timeout
-	}
-
-	// Set retry backoff
-	if cfg.Producer.RetryBackoff > 0 {
-		saramaConfig.Producer.Retry.Backoff = cfg.Producer.RetryBackoff
-	}
-
-	// Configure SASL if enabled
-	if cfg.Auth.SASL.Enabled {
-		saramaConfig.Net.SASL.Enable = true
-		saramaConfig.Net.SASL.User = cfg.Auth.SASL.Username
-		saramaConfig.Net.SASL.Password = cfg.Auth.SASL.Password
-
-		switch cfg.Auth.SASL.Mechanism {
-		case "PLAIN":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypePlaintext
-		case "SCRAM-SHA-256":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
-		case "SCRAM-SHA-512":
-			saramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
-		default:
-			return nil, fmt.Errorf("unsupported SASL mechanism: %s", cfg.Auth.SASL.Mechanism)
-		}
-
-		// Set up SCRAM client if needed
-		if cfg.Auth.SASL.Mechanism == "SCRAM-SHA-256" || cfg.Auth.SASL.Mechanism == "SCRAM-SHA-512" {
-			saramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-				if cfg.Auth.SASL.Mechanism == "SCRAM-SHA-512" {
-					return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
-				}
-				return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
-			}
+// NewProducer creates a new Kafka producer from independent BrokerConfig and ProducerConfig.
+// The returned producer is safe for concurrent use across goroutines and topics.
+// Close coordinates with active Publish calls and waits for already-admitted synchronous sends to complete.
+func NewProducer(brokerCfg BrokerConfig, producerCfg ProducerConfig, opts ...ProducerOption) (Producer, error) {
+	var options producerOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
 		}
 	}
 
-	// Configure TLS if enabled
-	if cfg.Auth.TLS.Enabled {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: cfg.Auth.TLS.InsecureSkipVerify,
-		}
-
-		// Load client cert if specified
-		if cfg.Auth.TLS.CertFile != "" && cfg.Auth.TLS.KeyFile != "" {
-			cert, err := tls.LoadX509KeyPair(cfg.Auth.TLS.CertFile, cfg.Auth.TLS.KeyFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load client cert: %w", err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-
-		// Load CA cert if specified
-		if cfg.Auth.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(cfg.Auth.TLS.CAFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read CA cert: %w", err)
-			}
-			caCertPool := x509.NewCertPool()
-			caCertPool.AppendCertsFromPEM(caCert)
-			tlsConfig.RootCAs = caCertPool
-		}
-
-		saramaConfig.Net.TLS.Enable = true
-		saramaConfig.Net.TLS.Config = tlsConfig
+	normalizedBroker, err := normalizeAndValidateBrokerConfig(brokerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid broker config: %w", err)
+	}
+	normalizedProducer, err := normalizeAndValidateProducerConfig(producerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid producer config: %w", err)
 	}
 
-	// Create sync producer
-	syncProducer, err := sarama.NewSyncProducer(cfg.Brokers, saramaConfig)
+	saramaCfg, err := buildProducerSaramaConfig(normalizedBroker, normalizedProducer)
+	if err != nil {
+		return nil, err
+	}
+
+	factory := options.syncProducerFactory
+	if factory == nil {
+		factory = func(addrs []string, cfg *sarama.Config) (syncProducerClient, error) {
+			return sarama.NewSyncProducer(addrs, cfg)
+		}
+	}
+
+	sp, err := factory(normalizedBroker.Brokers, saramaCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create producer: %w", err)
 	}
 
 	return &producer{
-		syncProducer: syncProducer,
-		config:       cfg,
+		syncProducer: sp,
+		requiredAcks: normalizedProducer.RequiredAcks,
+		metrics:      options.metrics,
+		tracing:      options.tracing,
 	}, nil
 }
 
@@ -144,18 +86,50 @@ func (p *producer) Publish(ctx context.Context, topic string, key, value []byte)
 	return p.PublishWithHeaders(ctx, topic, key, value, nil)
 }
 
-// PublishWithHeaders sends a message with custom headers.
+// PublishWithHeaders sends a message with custom headers. Context cancellation
+// can prevent admission. Once Sarama starts the synchronous send, its network
+// timeouts and retry budget govern completion.
 func (p *producer) PublishWithHeaders(ctx context.Context, topic string, key, value []byte, headers []RecordHeader) error {
-	msg := &sarama.ProducerMessage{
-		Topic: topic,
-		Key:   sarama.ByteEncoder(key),
-		Value: sarama.ByteEncoder(value),
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateTopicName(topic); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		p.metrics.recordPublish(topic, 0, err)
+		return err
 	}
 
-	// Add headers
-	if len(headers) > 0 {
-		msg.Headers = make([]sarama.RecordHeader, len(headers))
-		for i, h := range headers {
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		p.metrics.recordPublish(topic, 0, ErrProducerClosed)
+		return ErrProducerClosed
+	}
+	// Re-check context after admission and before calling Sarama synchronous send.
+	if err := ctx.Err(); err != nil {
+		p.mu.RUnlock()
+		p.metrics.recordPublish(topic, 0, err)
+		return err
+	}
+
+	sendHeaders := cloneHeaders(headers)
+	var endSpan func(error)
+	if p.tracing != nil {
+		_, sendHeaders, endSpan = p.tracing.startPublishSpan(ctx, topic, sendHeaders)
+	}
+
+	msg := &sarama.ProducerMessage{
+		Topic: topic,
+		Value: sarama.ByteEncoder(value),
+	}
+	if key != nil {
+		msg.Key = sarama.ByteEncoder(key)
+	}
+	if len(sendHeaders) > 0 {
+		msg.Headers = make([]sarama.RecordHeader, len(sendHeaders))
+		for i, h := range sendHeaders {
 			msg.Headers[i] = sarama.RecordHeader{
 				Key:   []byte(h.Key),
 				Value: h.Value,
@@ -163,17 +137,34 @@ func (p *producer) PublishWithHeaders(ctx context.Context, topic string, key, va
 		}
 	}
 
-	// Send message
+	start := time.Now()
 	_, _, err := p.syncProducer.SendMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to publish message on topic: %s : %w", topic, err)
-	}
+	duration := time.Since(start)
+	p.mu.RUnlock()
 
+	if endSpan != nil {
+		endSpan(err)
+	}
+	p.metrics.recordPublish(topic, duration, err)
+
+	if err != nil {
+		return fmt.Errorf("failed to publish message on topic %s: %w", topic, err)
+	}
 	return nil
 }
 
 // PublishJSON is a convenience method to publish JSON-encoded data.
 func (p *producer) PublishJSON(ctx context.Context, topic string, key string, data interface{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateTopicName(topic); err != nil {
+		return err
+	}
+
 	value, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
@@ -182,7 +173,18 @@ func (p *producer) PublishJSON(ctx context.Context, topic string, key string, da
 	return p.Publish(ctx, topic, []byte(key), value)
 }
 
-// Close closes the producer.
+// Close closes the producer after waiting for any active synchronous Publish calls to finish.
+// Repeated and concurrent Close calls are safe and return the recorded close result.
 func (p *producer) Close() error {
-	return p.syncProducer.Close()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return p.closeErr
+	}
+	p.closed = true
+	if p.syncProducer != nil {
+		p.closeErr = p.syncProducer.Close()
+	}
+	return p.closeErr
 }
